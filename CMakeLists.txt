@@ -1,0 +1,28 @@
+cmake_minimum_required(VERSION 3.15)
+project(BelfastPet CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+file(GLOB CORE_SRC src/core/*.cpp)
+add_library(petcore STATIC ${CORE_SRC})
+target_include_directories(petcore PUBLIC src)
+
+add_executable(test_core tests/test_core.cpp)
+target_link_libraries(test_core petcore)
+enable_testing()
+add_test(NAME core COMMAND test_core)
+
+if(WIN32)
+  file(GLOB WIN_SRC src/win/*.cpp)
+  add_executable(BelfastPet WIN32 ${WIN_SRC} src/win/resource.rc)
+  target_link_libraries(BelfastPet petcore gdiplus gdi32 user32 shell32 advapi32 ole32)
+  target_compile_definitions(BelfastPet PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0A00)
+  if(MSVC)
+    target_compile_options(BelfastPet PRIVATE /utf-8)
+    target_link_options(BelfastPet PRIVATE /ENTRY:wWinMainCRTStartup)
+  else()
+    target_link_options(BelfastPet PRIVATE -municode -static -static-libgcc -static-libstdc++)
+  endif()
+  add_custom_command(TARGET BelfastPet POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:BelfastPet>/assets)
+endif()

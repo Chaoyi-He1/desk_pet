@@ -1,0 +1,8 @@
+build/
+dist/
+.DS_Store
+log/
+__pycache__/
+# user-supplied source pictures (copyrighted); keep only the cut-outs the app needs
+assets/*.jpg
+assets/*.jpeg
