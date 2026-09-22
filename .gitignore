@@ -6,3 +6,6 @@ __pycache__/
 # user-supplied source pictures (copyrighted); keep only the cut-outs the app needs
 assets/*.jpg
 assets/*.jpeg
+# official game art downloaded by tools/fetch_official.sh (copyrighted, local only)
+assets/official/
+assets/skins/*.png

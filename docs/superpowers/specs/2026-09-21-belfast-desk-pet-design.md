@@ -46,6 +46,14 @@ Windows 外壳在启动时用 GDI+ 把每个不同的姿态（含镜像）渲染
 
 图片大小：`config.ini` 的 `height` 指定显示高度（默认 320 px），启动时按比例高质量缩放一次，之后所有姿态基于缩放后的图生成。320 px 高、宽约 160 px 的图，每个姿态约 200 KB，全部姿态约 3 MB。
 
+## 皮肤切换（2026-09-21 追加）
+
+- `assets/skins/*.png` 每个文件一套皮肤；右键菜单「切换形象」列出，显示名由 `core/skin.h` 的 `skinDisplayName` 去掉排序前缀得到。
+- 选择保存在用户数据目录的 `skin.txt`；解析顺序：保存的选择 → `config.ini` 的 `skin=` → `assets/belfast.png` → 第一个皮肤。
+- 显示高度 = `min(height, 2 × 原图高度)`（`displayHeight`），Q 版小人不被过度放大。
+- 切换时重新加载精灵集并重建状态机，保留横坐标，窗口尺寸随之改变。
+- 官方素材通过 `tools/fetch_official.sh` 从 Fernando2603/AzurLane 下载，不进 git。
+
 ## 低占用策略
 
 - **分层窗口**：`WS_EX_LAYERED`，用 `UpdateLayeredWindow` 提交带 alpha 的位图。alpha 为 0 的像素自动让鼠标事件穿透。

@@ -13,11 +13,7 @@ clang++ -std=c++17 -ObjC++ -fobjc-arc -O2 -Wall -Wextra -Wno-unused-parameter \
 cp src/mac/Info.plist "$APP/Contents/Info.plist"
 
 rm -rf "$APP/Contents/Resources/assets"
-mkdir -p "$APP/Contents/Resources/assets"
-cp assets/belfast.png assets/config.ini assets/lines.txt assets/icon.png "$APP/Contents/Resources/assets/"
-for d in idle blink walk drag fall react sleep skins; do
-  [ -d "assets/$d" ] && cp -R "assets/$d" "$APP/Contents/Resources/assets/"
-done
+rsync -a --exclude official/ --exclude '*.jpg' --exclude '*.jpeg' --exclude .DS_Store assets/ "$APP/Contents/Resources/assets/"
 
 # App icon (optional): build an .icns from assets/icon.png when iconutil is available.
 if command -v iconutil >/dev/null 2>&1 && command -v sips >/dev/null 2>&1; then

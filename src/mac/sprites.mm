@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/skin.h"
+
 namespace petmac {
 namespace {
 
@@ -56,21 +58,22 @@ CGImageRef SpriteSet::loadScaled(const std::string& path, std::vector<unsigned c
   return img;
 }
 
-bool SpriteSet::load(const std::string& assetsDir, int height, double scale, std::string* err) {
+bool SpriteSet::load(const std::string& assetsDir, const std::string& imagePath, int height, double scale,
+                     std::string* err) {
   using pet::Anim;
   scale_ = scale;
-  std::string basePath = assetsDir + "/belfast.png";
+  const std::string& basePath = imagePath;
   CGImageRef probe = decode(basePath);
   std::vector<std::string> idleSeq = listPngs(assetsDir + "/idle");
   if (!probe && idleSeq.empty()) {
-    if (err) *err = "没有找到形象文件。\n\n请把透明背景的贝尔法斯特立绘保存为\n" + basePath + "\n然后重新启动。";
+    if (err) *err = "没有找到形象文件：\n" + basePath + "\n\n请把透明背景的立绘 PNG 放到 assets/skins 目录后重新启动。";
     return false;
   }
   double refW = 1, refH = 2;
   if (probe) { refW = CGImageGetWidth(probe); refH = CGImageGetHeight(probe); CGImageRelease(probe); }
   else if (CGImageRef f = decode(idleSeq[0])) { refW = CGImageGetWidth(f); refH = CGImageGetHeight(f); CGImageRelease(f); }
 
-  H_ = std::max(height, 32);
+  H_ = pet::displayHeight(height, static_cast<int>(refH));
   W_ = std::max(1, static_cast<int>(std::lround(refW * H_ / refH)));
   int padX = static_cast<int>(std::ceil(0.105 * H_ + 0.02 * W_)) + 2;
   padTop_ = static_cast<int>(std::ceil(0.05 * H_)) + 3;

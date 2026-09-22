@@ -25,9 +25,10 @@ public:
   SpriteSet(const SpriteSet&) = delete;
   SpriteSet& operator=(const SpriteSet&) = delete;
 
-  // `height` is the on-screen height of the picture in pixels. On failure returns
-  // false and fills *err with a message for the user.
-  bool load(const std::wstring& assetsDir, int height, std::wstring* err);
+  // `imagePath` is the base picture; `assetsDir` is searched for optional frame
+  // sequences. `height` is the configured on-screen height (see pet::displayHeight).
+  // On failure returns false and fills *err with a message for the user.
+  bool load(const std::wstring& assetsDir, const std::wstring& imagePath, int height, std::wstring* err);
 
   int width() const { return cw_; }    // canvas (window) size, same for all frames
   int height() const { return ch_; }

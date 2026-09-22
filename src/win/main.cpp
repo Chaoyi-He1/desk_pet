@@ -8,8 +8,10 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #include <cstdint>
+#include <algorithm>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -19,6 +21,7 @@
 #include "core/brain.h"
 #include "core/ini.h"
 #include "core/screen.h"
+#include "core/skin.h"
 #include "win/bubble.h"
 #include "win/resource.h"
 #include "win/sprites.h"
@@ -33,15 +36,22 @@ const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t* kRunName = L"BelfastPet";
 const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3;
 const UINT WM_TRAY = WM_APP + 1;
-enum { IDM_TOGGLE = 100, IDM_AUTOSTART, IDM_HIDE_FS, IDM_OPEN_ASSETS, IDM_EXIT };
+enum { IDM_TOGGLE = 100, IDM_AUTOSTART, IDM_HIDE_FS, IDM_OPEN_ASSETS, IDM_EXIT, IDM_SKIN_BASE = 1000 };
 
 struct App {
   HINSTANCE hinst = nullptr;
   HWND hwnd = nullptr;
   std::unique_ptr<pet::Brain> brain;
-  petwin::SpriteSet sprites;
+  std::unique_ptr<petwin::SpriteSet> sprites;
   petwin::Bubble bubble;
   std::wstring assetsDir;
+  std::wstring skinsDir;
+  std::vector<std::wstring> skins;      // file names in skinsDir, sorted
+  std::wstring currentSkin;             // file name (empty when using assets\belfast.png)
+  std::wstring configSkin;
+  std::vector<std::string> lines;
+  pet::BrainConfig cfgBase;             // everything except sprite size / frame counts
+  int height = 320;
 
   bool hideOnFullscreen = true;
   int bubbleMs = 3000;
@@ -102,6 +112,72 @@ std::vector<std::string> loadLines(const std::wstring& path) {
   }
   if (out.empty()) out = {"\xE6\x8C\x87\xE6\x8C\xA5\xE5\xAE\x98\xEF\xBC\x8C\xE6\x9C\x89\xE4\xBB\x80\xE4\xB9\x88\xE5\x90\xA9\xE5\x92\x90\xE5\x90\x97\xEF\xBC\x9F"};  // 指挥官，有什么吩咐吗？
   return out;
+}
+
+std::wstring userDataDir() {
+  wchar_t buf[MAX_PATH];
+  if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, buf))) return exeDir();
+  std::wstring dir = std::wstring(buf) + L"\\BelfastPet";
+  CreateDirectoryW(dir.c_str(), nullptr);
+  return dir;
+}
+
+bool fileExists(const std::wstring& path) {
+  DWORD a = GetFileAttributesW(path.c_str());
+  return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+std::string narrow(const std::wstring& w) {
+  if (w.empty()) return {};
+  int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+  std::string s(n, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), &s[0], n, nullptr, nullptr);
+  return s;
+}
+
+std::vector<std::wstring> listSkins(const std::wstring& skinsDir) {
+  std::vector<std::wstring> out;
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW((skinsDir + L"\\*.png").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return out;
+  do {
+    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) out.push_back(fd.cFileName);
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  std::sort(out.begin(), out.end(), [](const std::wstring& a, const std::wstring& b) {
+    return CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE, a.c_str(), -1, b.c_str(), -1) == CSTR_LESS_THAN;
+  });
+  return out;
+}
+
+std::wstring savedSkinFile() { return userDataDir() + L"\\skin.txt"; }
+
+std::wstring readSavedSkin() {
+  std::wstring w = widen(readFile(savedSkinFile()));
+  while (!w.empty() && (w.back() == L'\r' || w.back() == L'\n' || w.back() == L' ')) w.pop_back();
+  return w;
+}
+
+void writeSavedSkin(const std::wstring& name) {
+  std::string utf8 = narrow(name);
+  std::ofstream out(savedSkinFile().c_str(), std::ios::binary | std::ios::trunc);
+  out << utf8;
+}
+
+// Picks the picture to show: saved choice → config.ini skin= → assets\belfast.png → first skin.
+std::wstring resolveSkin(App& app) {
+  auto has = [&](const std::wstring& n) {
+    return !n.empty() && std::find(app.skins.begin(), app.skins.end(), n) != app.skins.end();
+  };
+  std::wstring saved = readSavedSkin();
+  if (has(saved)) return saved;
+  if (has(app.configSkin)) return app.configSkin;
+  if (fileExists(app.assetsDir + L"\\belfast.png")) return L"";
+  return app.skins.empty() ? L"" : app.skins.front();
+}
+
+std::wstring skinPath(const App& app, const std::wstring& name) {
+  return name.empty() ? app.assetsDir + L"\\belfast.png" : app.skinsDir + L"\\" + name;
 }
 
 RECT workArea(HWND hwnd) {
@@ -194,9 +270,9 @@ void applyFrame(App& app, const pet::Frame& f) {
     app.shownSrc = nullptr;
     return;
   }
-  petwin::SpriteFrame sf = app.sprites.get(f.anim, f.index, f.facingLeft && app.mirrorLeft);
+  petwin::SpriteFrame sf = app.sprites->get(f.anim, f.index, f.facingLeft && app.mirrorLeft);
   int wx = f.x + sf.offX, wy = f.y + sf.offY;
-  int w = app.sprites.width(), h = app.sprites.height();
+  int w = app.sprites->width(), h = app.sprites->height();
   bool sameContent = sf.src == app.shownSrc && sf.mirrored == app.shownMirrored;
   if (sameContent && IsWindowVisible(app.hwnd)) {
     SetWindowPos(app.hwnd, nullptr, wx, wy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -215,7 +291,7 @@ void applyFrame(App& app, const pet::Frame& f) {
     app.shownMirrored = sf.mirrored;
     if (!IsWindowVisible(app.hwnd)) ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
   }
-  int ax = f.x + w / 2, ay = f.y + app.sprites.padTop();
+  int ax = f.x + w / 2, ay = f.y + app.sprites->padTop();
   if (!f.say.empty()) app.bubble.show(widen(f.say), ax, ay, app.bubbleMs);
   else app.bubble.moveTo(ax, ay);
 }
@@ -248,6 +324,38 @@ void updateHidden(App& app) {
   step(app, 0);
 }
 
+// Loads `name` (a file in skinsDir, or "" for assets\belfast.png). On success the old
+// sprites and brain are replaced; the pet keeps its x position and stays on the ground.
+bool loadSkin(App& app, const std::wstring& name, std::wstring* err) {
+  std::unique_ptr<petwin::SpriteSet> next(new petwin::SpriteSet());
+  if (!next->load(app.assetsDir, skinPath(app, name), app.height, err)) return false;
+
+  int x = app.brain ? app.brain->tick(0).x : -1;
+  pet::BrainConfig cfg = app.cfgBase;
+  cfg.spriteW = next->width();
+  cfg.spriteH = next->height();
+  for (int i = 0; i < (int)Anim::Count; ++i) cfg.frameCount[i] = next->frameCount((Anim)i);
+  std::unique_ptr<pet::Brain> brain(new pet::Brain(cfg, app.lines, (unsigned)GetTickCount()));
+
+  app.sprites = std::move(next);
+  app.brain = std::move(brain);
+  app.currentSkin = name;
+  app.shownSrc = nullptr;
+  if (app.hwnd) {
+    RECT work = workArea(app.hwnd);
+    app.brain->setWorkTop(work.top);
+    app.brain->setGround(work.left, work.right, work.bottom);
+    if (x < 0) x = app.startX >= 0 ? app.startX : work.right - cfg.spriteW - 24;
+    app.brain->setPosition(x, work.bottom - cfg.spriteH);
+    app.brain->setHidden(app.userHidden || app.fsHidden);
+    SetWindowPos(app.hwnd, nullptr, 0, 0, cfg.spriteW, cfg.spriteH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    app.timerMs = -1;
+    app.lastTick = GetTickCount64();
+    step(app, 0);
+  }
+  return true;
+}
+
 // ---------- menu / tray ----------
 
 void showMenu(App& app) {
@@ -255,6 +363,17 @@ void showMenu(App& app) {
   AppendMenuW(m, MF_STRING, IDM_TOGGLE, app.userHidden ? L"显示(&S)" : L"隐藏(&H)");
   AppendMenuW(m, MF_STRING | (app.hideOnFullscreen ? MF_CHECKED : 0), IDM_HIDE_FS, L"全屏时自动隐藏(&F)");
   AppendMenuW(m, MF_STRING | (autostartEnabled() ? MF_CHECKED : 0), IDM_AUTOSTART, L"开机自动启动(&A)");
+  app.skins = listSkins(app.skinsDir);
+  HMENU skinMenu = CreatePopupMenu();
+  if (fileExists(app.assetsDir + L"\\belfast.png"))
+    AppendMenuW(skinMenu, MF_STRING | (app.currentSkin.empty() ? MF_CHECKED : 0), IDM_SKIN_BASE, L"belfast.png");
+  for (size_t i = 0; i < app.skins.size(); ++i) {
+    std::wstring label = widen(pet::skinDisplayName(narrow(app.skins[i])));
+    AppendMenuW(skinMenu, MF_STRING | (app.skins[i] == app.currentSkin ? MF_CHECKED : 0),
+                IDM_SKIN_BASE + 1 + (UINT)i, label.c_str());
+  }
+  if (GetMenuItemCount(skinMenu) == 0) AppendMenuW(skinMenu, MF_STRING | MF_GRAYED, 0, L"(assets\\skins 里没有 PNG)");
+  AppendMenuW(m, MF_POPUP, (UINT_PTR)skinMenu, L"切换形象(&K)");
   AppendMenuW(m, MF_STRING, IDM_OPEN_ASSETS, L"打开素材文件夹(&O)");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING, IDM_EXIT, L"退出(&X)");
@@ -277,10 +396,18 @@ void showMenu(App& app) {
       setAutostart(!autostartEnabled());
       break;
     case IDM_OPEN_ASSETS:
-      ShellExecuteW(nullptr, L"open", app.assetsDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+      ShellExecuteW(nullptr, L"open", app.skinsDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
       break;
     case IDM_EXIT:
       DestroyWindow(app.hwnd);
+      break;
+    default:
+      if (cmd >= IDM_SKIN_BASE && cmd < IDM_SKIN_BASE + 1 + (int)app.skins.size()) {
+        std::wstring name = cmd == IDM_SKIN_BASE ? L"" : app.skins[cmd - IDM_SKIN_BASE - 1];
+        std::wstring err;
+        if (loadSkin(app, name, &err)) writeSavedSkin(name);
+        else MessageBoxW(app.hwnd, err.c_str(), L"BelfastPet", MB_OK | MB_ICONWARNING);
+      }
       break;
   }
 }
@@ -396,32 +523,30 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   app.hinst = hinst;
   app.assetsDir = exeDir() + L"\\assets";
 
+  app.skinsDir = app.assetsDir + L"\\skins";
   pet::Ini ini = pet::Ini::parse(readFile(app.assetsDir + L"\\config.ini"));
-  int height = ini.getInt("general", "height", 320);
+  app.height = ini.getInt("general", "height", 320);
   app.mirrorLeft = ini.getInt("general", "mirror_left", 1) != 0;
   app.hideOnFullscreen = ini.getInt("general", "hide_on_fullscreen", 1) != 0;
   app.bubbleMs = ini.getInt("general", "bubble_ms", 3000);
   app.startX = ini.getInt("general", "start_x", -1);
+  app.configSkin = widen(ini.get("general", "skin", ""));
+  app.cfgBase.walkSpeed = ini.getInt("general", "walk_speed", 40);
+  app.cfgBase.sleepAfterSec = ini.getInt("general", "sleep_after", 180);
+  app.cfgBase.idleMinMs = ini.getInt("general", "idle_min_ms", 4000);
+  app.cfgBase.idleMaxMs = ini.getInt("general", "idle_max_ms", 12000);
+  for (int i = 0; i < (int)Anim::Count; ++i)
+    app.cfgBase.fps[i] = ini.getInt("fps", pet::animName((Anim)i), app.cfgBase.fps[i]);
+  app.lines = loadLines(app.assetsDir + L"\\lines.txt");
+  app.skins = listSkins(app.skinsDir);
 
   std::wstring err;
-  if (!app.sprites.load(app.assetsDir, height, &err)) {
+  std::wstring first = resolveSkin(app);
+  if (!loadSkin(app, first, &err) && (first.empty() || !loadSkin(app, L"", &err))) {
     MessageBoxW(nullptr, err.c_str(), L"BelfastPet", MB_OK | MB_ICONWARNING);
     return 1;
   }
-
-  pet::BrainConfig cfg;
-  cfg.spriteW = app.sprites.width();
-  cfg.spriteH = app.sprites.height();
-  cfg.walkSpeed = ini.getInt("general", "walk_speed", 40);
-  cfg.sleepAfterSec = ini.getInt("general", "sleep_after", 180);
-  cfg.idleMinMs = ini.getInt("general", "idle_min_ms", 4000);
-  cfg.idleMaxMs = ini.getInt("general", "idle_max_ms", 12000);
-  for (int i = 0; i < (int)Anim::Count; ++i) {
-    Anim a = (Anim)i;
-    cfg.fps[i] = ini.getInt("fps", pet::animName(a), cfg.fps[i]);
-    cfg.frameCount[i] = app.sprites.frameCount(a);
-  }
-  app.brain.reset(new pet::Brain(cfg, loadLines(app.assetsDir + L"\\lines.txt"), (unsigned)GetTickCount()));
+  const int spriteW = app.sprites->width(), spriteH = app.sprites->height();
 
   WNDCLASSW wc = {};
   wc.lpfnWndProc = wndProc;
@@ -430,7 +555,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   RegisterClassW(&wc);
   app.hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, kClass,
-                             L"BelfastPet", WS_POPUP, 0, 0, cfg.spriteW, cfg.spriteH, nullptr, nullptr, hinst, nullptr);
+                             L"BelfastPet", WS_POPUP, 0, 0, spriteW, spriteH, nullptr, nullptr, hinst, nullptr);
   if (!app.hwnd) {
     MessageBoxW(nullptr, L"窗口创建失败。", L"BelfastPet", MB_OK | MB_ICONERROR);
     return 1;
@@ -440,8 +565,8 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   RECT work = workArea(app.hwnd);
   app.brain->setWorkTop(work.top);
   app.brain->setGround(work.left, work.right, work.bottom);
-  int x0 = app.startX >= 0 ? app.startX : work.right - cfg.spriteW - 24;
-  app.brain->setPosition(x0, work.bottom - cfg.spriteH);
+  int x0 = app.startX >= 0 ? app.startX : work.right - spriteW - 24;
+  app.brain->setPosition(x0, work.bottom - spriteH);
 
   addTray(app);
   app.lastTick = GetTickCount64();

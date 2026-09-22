@@ -7,6 +7,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <ServiceManagement/ServiceManagement.h>
 
+#include <algorithm>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -16,6 +17,7 @@
 #include "core/brain.h"
 #include "core/ini.h"
 #include "core/screen.h"
+#include "core/skin.h"
 #include "mac/bubble.h"
 #include "mac/sprites.h"
 
@@ -54,6 +56,40 @@ static std::string assetsDir() {
   if ([[NSFileManager defaultManager] fileExistsAtPath:inBundle]) return inBundle.UTF8String;
   NSString* exe = [NSBundle mainBundle].executablePath.stringByDeletingLastPathComponent;
   return [exe stringByAppendingPathComponent:@"assets"].UTF8String;
+}
+
+static std::string userDataDir() {
+  NSArray* dirs = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
+  NSString* dir = [dirs.firstObject stringByAppendingPathComponent:@"BelfastPet"];
+  [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  return dir.UTF8String;
+}
+
+static bool fileExists(const std::string& p) {
+  BOOL isDir = NO;
+  return [[NSFileManager defaultManager] fileExistsAtPath:@(p.c_str()) isDirectory:&isDir] && !isDir;
+}
+
+static std::vector<std::string> listSkins(const std::string& skinsDir) {
+  std::vector<std::string> out;
+  NSArray* names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@(skinsDir.c_str()) error:nil];
+  for (NSString* n in names)
+    if ([[n.pathExtension lowercaseString] isEqualToString:@"png"]) out.push_back(n.precomposedStringWithCanonicalMapping.UTF8String);
+  std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) {
+    return [@(a.c_str()) localizedStandardCompare:@(b.c_str())] == NSOrderedAscending;
+  });
+  return out;
+}
+
+static std::string readSavedSkin() {
+  std::string s = readFile(userDataDir() + "/skin.txt");
+  while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+  return s;
+}
+
+static void writeSavedSkin(const std::string& name) {
+  std::ofstream out(userDataDir() + "/skin.txt", std::ios::binary | std::ios::trunc);
+  out << name;
 }
 
 // Brain uses a top-left origin (y down); AppKit uses bottom-left (y up) on the main screen.
@@ -134,8 +170,12 @@ static double userIdleSeconds() {
   NSTimer* animTimer_;
   NSTimer* watchTimer_;
   std::unique_ptr<pet::Brain> brain_;
-  petmac::SpriteSet sprites_;
-  std::string assets_;
+  std::unique_ptr<petmac::SpriteSet> sprites_;
+  std::string assets_, skinsDir_, configSkin_, currentSkin_;
+  std::vector<std::string> skins_;
+  std::vector<std::string> lines_;
+  pet::BrainConfig cfgBase_;
+  int height_;
   int bubbleMs_;
   bool mirrorLeft_, hideOnFullscreen_, userHidden_, fsHidden_;
   int startX_;
@@ -161,9 +201,22 @@ static double userIdleSeconds() {
   shownImage_ = nullptr;
   shownMirror_ = false;
 
-  double scale = NSScreen.mainScreen.backingScaleFactor;
+  skinsDir_ = assets_ + "/skins";
+  height_ = height;
+  configSkin_ = ini.get("general", "skin", "");
+  cfgBase_.walkSpeed = ini.getInt("general", "walk_speed", 40);
+  cfgBase_.sleepAfterSec = ini.getInt("general", "sleep_after", 180);
+  cfgBase_.idleMinMs = ini.getInt("general", "idle_min_ms", 4000);
+  cfgBase_.idleMaxMs = ini.getInt("general", "idle_max_ms", 12000);
+  for (int i = 0; i < (int)Anim::Count; ++i)
+    cfgBase_.fps[i] = ini.getInt("fps", pet::animName((Anim)i), cfgBase_.fps[i]);
+  lines_ = loadLines(assets_ + "/lines.txt");
+  skins_ = listSkins(skinsDir_);
+
   std::string err;
-  if (!sprites_.load(assets_, height, scale, &err)) {
+  std::string first = [self resolveSkin];
+  if (const char* forced = getenv("BELFASTPET_SKIN")) first = forced;  // debug aid
+  if (![self loadSkin:first error:&err] && (first.empty() || ![self loadSkin:"" error:&err])) {
     NSAlert* a = [[NSAlert alloc] init];
     a.messageText = @"BelfastPet";
     a.informativeText = @(err.c_str());
@@ -171,26 +224,12 @@ static double userIdleSeconds() {
     [NSApp terminate:nil];
     return;
   }
-
-  pet::BrainConfig cfg;
-  cfg.spriteW = sprites_.width();
-  cfg.spriteH = sprites_.height();
-  cfg.walkSpeed = ini.getInt("general", "walk_speed", 40);
-  cfg.sleepAfterSec = ini.getInt("general", "sleep_after", 180);
-  cfg.idleMinMs = ini.getInt("general", "idle_min_ms", 4000);
-  cfg.idleMaxMs = ini.getInt("general", "idle_max_ms", 12000);
-  for (int i = 0; i < (int)Anim::Count; ++i) {
-    Anim a = (Anim)i;
-    cfg.fps[i] = ini.getInt("fps", pet::animName(a), cfg.fps[i]);
-    cfg.frameCount[i] = sprites_.frameCount(a);
-  }
-  brain_.reset(new pet::Brain(cfg, loadLines(assets_ + "/lines.txt"), (unsigned)time(nullptr)));
-
   [self createWindow];
+  [self applySprites];
   [self updateGround];
   NSRect work = NSScreen.mainScreen.visibleFrame;
-  int x0 = startX_ >= 0 ? startX_ : (int)(NSMaxX(work) - cfg.spriteW - 24);
-  brain_->setPosition(x0, (int)(screenH() - NSMinY(work)) - cfg.spriteH);
+  int x0 = startX_ >= 0 ? startX_ : (int)(NSMaxX(work) - sprites_->width() - 24);
+  brain_->setPosition(x0, (int)(screenH() - NSMinY(work)) - sprites_->height());
 
   bubble_ = [[PetBubble alloc] init];
   [self createStatusItem];
@@ -211,8 +250,8 @@ static double userIdleSeconds() {
     NSString* pfx = @(prefix);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
       [self snapshotTo:[pfx stringByAppendingString:@"_idle.png"]];
-      brain_->press(last_.x + sprites_.width() / 2, last_.y + sprites_.height() / 2);
-      brain_->move(last_.x + sprites_.width() / 2 + 40, last_.y + sprites_.height() / 2 - 150);
+      brain_->press(last_.x + sprites_->width() / 2, last_.y + sprites_->height() / 2);
+      brain_->move(last_.x + sprites_->width() / 2 + 40, last_.y + sprites_->height() / 2 - 150);
       [self step:0];
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self snapshotTo:[pfx stringByAppendingString:@"_drag.png"]];
@@ -230,17 +269,59 @@ static double userIdleSeconds() {
 }
 
 - (void)snapshotTo:(NSString*)path {
-  CGImageRef img = CGWindowListCreateImage(CGRectNull, kCGWindowListOptionIncludingWindow,
-                                           (CGWindowID)panel_.windowNumber, kCGWindowImageBoundsIgnoreFraming);
-  if (!img) { NSLog(@"snapshot failed"); return; }
-  NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:img];
+  // Render our own layer tree; this needs no screen-recording permission.
+  NSRect b = view_.bounds;
+  NSBitmapImageRep* rep = [view_ bitmapImageRepForCachingDisplayInRect:b];
+  [view_ cacheDisplayInRect:b toBitmapImageRep:rep];
   [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
-  CGImageRelease(img);
-  NSLog(@"snapshot %@ (%zux%zu) anim=%s", path, CGImageGetWidth(img), CGImageGetHeight(img), pet::animName(last_.anim));
+  NSLog(@"snapshot %@ (%ldx%ld) anim=%s skin=%s", path, (long)rep.pixelsWide, (long)rep.pixelsHigh,
+        pet::animName(last_.anim), currentSkin_.c_str());
+}
+
+- (std::string)resolveSkin {
+  auto has = [&](const std::string& n) { return !n.empty() && std::find(skins_.begin(), skins_.end(), n) != skins_.end(); };
+  std::string saved = readSavedSkin();
+  if (has(saved)) return saved;
+  if (has(configSkin_)) return configSkin_;
+  if (fileExists(assets_ + "/belfast.png")) return "";
+  return skins_.empty() ? "" : skins_.front();
+}
+
+- (std::string)skinPath:(const std::string&)name {
+  return name.empty() ? assets_ + "/belfast.png" : skinsDir_ + "/" + name;
+}
+
+// Loads `name` (a file in skins/, or "" for assets/belfast.png) and rebuilds the brain.
+- (bool)loadSkin:(const std::string&)name error:(std::string*)err {
+  std::unique_ptr<petmac::SpriteSet> next(new petmac::SpriteSet());
+  if (!next->load(assets_, [self skinPath:name], height_, NSScreen.mainScreen.backingScaleFactor, err)) return false;
+  int x = brain_ ? brain_->tick(0).x : -1;
+  pet::BrainConfig cfg = cfgBase_;
+  cfg.spriteW = next->width();
+  cfg.spriteH = next->height();
+  for (int i = 0; i < (int)Anim::Count; ++i) cfg.frameCount[i] = next->frameCount((Anim)i);
+  brain_.reset(new pet::Brain(cfg, lines_, (unsigned)time(nullptr)));
+  sprites_ = std::move(next);
+  currentSkin_ = name;
+  shownImage_ = nullptr;
+  shownPose_ = pet::Pose();
+  shownMirror_ = false;
+  if (panel_) {
+    [self applySprites];
+    [self updateGround];
+    NSRect work = NSScreen.mainScreen.visibleFrame;
+    if (x < 0) x = (int)(NSMaxX(work) - cfg.spriteW - 24);
+    brain_->setPosition(x, (int)(screenH() - NSMinY(work)) - cfg.spriteH);
+    brain_->setHidden(userHidden_ || fsHidden_);
+    timerMs_ = -1;
+    lastTick_ = CACurrentMediaTime();
+    [self step:0];
+  }
+  return true;
 }
 
 - (void)createWindow {
-  NSRect r = NSMakeRect(0, 0, sprites_.width(), sprites_.height());
+  NSRect r = NSMakeRect(0, 0, 10, 10);
   panel_ = [[NSPanel alloc] initWithContentRect:r
                                       styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
                                         backing:NSBackingStoreBuffered
@@ -257,16 +338,11 @@ static double userIdleSeconds() {
 
   view_ = [[PetView alloc] initWithFrame:r];
   view_.controller = self;
-  view_.sprites = &sprites_;
   view_.wantsLayer = YES;
   view_.layer.backgroundColor = NSColor.clearColor.CGColor;
 
-  CGFloat W = sprites_.picW(), H = sprites_.picH();
   CALayer* pic = [CALayer layer];
-  pic.bounds = CGRectMake(0, 0, W, H);
   pic.anchorPoint = CGPointMake(0.5, 0);  // bottom-centre: poses rotate/scale around the feet
-  pic.position = CGPointMake(sprites_.width() / 2.0, sprites_.padBottom());
-  pic.contentsScale = NSScreen.mainScreen.backingScaleFactor;
   pic.contentsGravity = kCAGravityResize;
   pic.minificationFilter = kCAFilterLinear;
   pic.magnificationFilter = kCAFilterLinear;
@@ -275,14 +351,10 @@ static double userIdleSeconds() {
 
   // Darkening overlay (sleep): a black layer masked by the picture's own alpha.
   CALayer* shade = [CALayer layer];
-  shade.bounds = pic.bounds;
   shade.anchorPoint = pic.anchorPoint;
-  shade.position = pic.position;
   shade.backgroundColor = NSColor.blackColor.CGColor;
   shade.opacity = 0;
   CALayer* mask = [CALayer layer];
-  mask.frame = CGRectMake(0, 0, W, H);
-  mask.contentsScale = pic.contentsScale;
   mask.contentsGravity = kCAGravityResize;
   shade.mask = mask;
   [view_.layer addSublayer:shade];
@@ -290,6 +362,27 @@ static double userIdleSeconds() {
   view_.maskLayer = mask;
 
   panel_.contentView = view_;
+}
+
+// Sizes the panel and layers for the current sprite set.
+- (void)applySprites {
+  view_.sprites = sprites_.get();
+  CGFloat W = sprites_->picW(), H = sprites_->picH();
+  CGFloat scale = NSScreen.mainScreen.backingScaleFactor;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  view_.picLayer.affineTransform = CGAffineTransformIdentity;
+  view_.shadeLayer.affineTransform = CGAffineTransformIdentity;
+  view_.picLayer.bounds = CGRectMake(0, 0, W, H);
+  view_.picLayer.position = CGPointMake(sprites_->width() / 2.0, sprites_->padBottom());
+  view_.picLayer.contentsScale = scale;
+  view_.shadeLayer.bounds = view_.picLayer.bounds;
+  view_.shadeLayer.position = view_.picLayer.position;
+  view_.maskLayer.frame = CGRectMake(0, 0, W, H);
+  view_.maskLayer.contentsScale = scale;
+  [CATransaction commit];
+  [panel_ setContentSize:NSMakeSize(sprites_->width(), sprites_->height())];
+  [panel_ displayIfNeeded];
 }
 
 - (void)createStatusItem {
@@ -319,6 +412,25 @@ static double userIdleSeconds() {
     login.state = ([SMAppService mainAppService].status == SMAppServiceStatusEnabled) ? NSControlStateValueOn
                                                                                        : NSControlStateValueOff;
   }
+  skins_ = listSkins(skinsDir_);
+  NSMenu* skinMenu = [[NSMenu alloc] init];
+  if (fileExists(assets_ + "/belfast.png")) {
+    NSMenuItem* it = [skinMenu addItemWithTitle:@"belfast.png" action:@selector(pickSkin:) keyEquivalent:@""];
+    it.target = self;
+    it.tag = -1;
+    it.state = currentSkin_.empty() ? NSControlStateValueOn : NSControlStateValueOff;
+  }
+  for (size_t i = 0; i < skins_.size(); ++i) {
+    NSMenuItem* it = [skinMenu addItemWithTitle:@(pet::skinDisplayName(skins_[i]).c_str())
+                                         action:@selector(pickSkin:)
+                                  keyEquivalent:@""];
+    it.target = self;
+    it.tag = (NSInteger)i;
+    it.state = skins_[i] == currentSkin_ ? NSControlStateValueOn : NSControlStateValueOff;
+  }
+  if (skinMenu.numberOfItems == 0) [[skinMenu addItemWithTitle:@"(assets/skins 里没有 PNG)" action:nil keyEquivalent:@""] setEnabled:NO];
+  NSMenuItem* skinItem = [m addItemWithTitle:@"切换形象" action:nil keyEquivalent:@""];
+  skinItem.submenu = skinMenu;
   NSMenuItem* open = [m addItemWithTitle:@"打开素材文件夹" action:@selector(openAssets:) keyEquivalent:@""];
   open.target = self;
   [m addItem:[NSMenuItem separatorItem]];
@@ -348,7 +460,19 @@ static double userIdleSeconds() {
   status_.menu = [self buildMenu];
 }
 - (void)openAssets:(id)s {
-  [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:@(assets_.c_str())]];
+  [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:@(skinsDir_.c_str())]];
+}
+- (void)pickSkin:(NSMenuItem*)item {
+  std::string name = item.tag < 0 ? "" : skins_[(size_t)item.tag];
+  std::string err;
+  if ([self loadSkin:name error:&err]) writeSavedSkin(name);
+  else {
+    NSAlert* a = [[NSAlert alloc] init];
+    a.messageText = @"BelfastPet";
+    a.informativeText = @(err.c_str());
+    [a runModal];
+  }
+  status_.menu = [self buildMenu];
 }
 
 - (void)showMenu:(NSEvent*)e inView:(NSView*)v {
@@ -378,7 +502,7 @@ static double userIdleSeconds() {
     shownImage_ = nullptr;
     return;
   }
-  petmac::MacFrame mf = sprites_.get(f.anim, f.index);
+  petmac::MacFrame mf = sprites_->get(f.anim, f.index);
   bool mirror = f.facingLeft && mirrorLeft_;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
@@ -402,12 +526,12 @@ static double userIdleSeconds() {
   [CATransaction commit];
 
   CGFloat sh = screenH();
-  NSPoint origin = NSMakePoint(f.x, sh - f.y - sprites_.height());
+  NSPoint origin = NSMakePoint(f.x, sh - f.y - sprites_->height());
   if (!NSEqualPoints(panel_.frame.origin, origin)) [panel_ setFrameOrigin:origin];
   if (!panel_.visible) [panel_ orderFrontRegardless];
 
-  double ax = f.x + sprites_.width() / 2.0;
-  double ay = sh - f.y - sprites_.padTop();  // top of the picture, y up
+  double ax = f.x + sprites_->width() / 2.0;
+  double ay = sh - f.y - sprites_->padTop();  // top of the picture, y up
   if (!f.say.empty()) [bubble_ showText:@(f.say.c_str()) anchorX:ax anchorY:ay durationMs:bubbleMs_];
   else [bubble_ moveToAnchorX:ax anchorY:ay];
 }

@@ -5,7 +5,7 @@
 设计目标：占用低、不打扰。
 
 - Windows 版是单个 1.1 MB 的 exe，不依赖任何运行时；进程私有内存预计 6–10 MB（320 px 高的立绘约 12 张预渲染位图，共 4 MB 左右）。
-- macOS 版实测物理内存 17–19 MB（M 系列芯片，Retina）。
+- macOS 版实测物理内存 17–24 MB（M 系列芯片，Retina；取决于皮肤原图大小）。
 - 静止时 CPU 为 0%；走动时 1–3%（单核，主要是窗口移动的合成开销）。所有姿态在启动时预先渲染，运行时只切换位图或图层变换。
 - 点击宠物不会夺走当前程序的焦点；不出现在任务栏 / Dock。
 - 前台程序全屏（游戏、视频）时自动隐藏并停止所有定时器；退出全屏后自动回来。
@@ -21,6 +21,7 @@
 | 松手后下落 | 拖到半空松手 |
 | 说一句台词 | 左键单击 |
 | 睡觉（变暗） | 用户 3 分钟没有键鼠操作 |
+| 切换形象（10 套官方皮肤 + 10 个 Q 版小人） | 右键菜单「切换形象」，选择会被记住 |
 | 菜单：显示 / 隐藏、全屏自动隐藏、开机自启、打开素材文件夹、退出 | 右键宠物，或托盘 / 状态栏图标 |
 
 ## 运行
@@ -31,35 +32,42 @@
 
 ## 形象文件
 
-程序读取 `assets/belfast.png`（透明背景 PNG）。官方立绘受版权保护，本仓库不包含，`assets/belfast.png` 是一张占位提示图。
+形象放在 `assets/skins/`，每个 PNG 就是一套皮肤，右键菜单「切换形象」里按文件名列出（文件名开头的 `数字-` 只用于排序，不显示）。选择保存在用户目录（Windows `%APPDATA%\BelfastPet\skin.txt`，macOS `~/Library/Application Support/BelfastPet/skin.txt`），没有选择时用 `config.ini` 的 `skin=`。
 
-把你自己的立绘处理成透明背景后覆盖这个文件即可（Windows 在 exe 旁边的 `assets/`；macOS 在 `BelfastPet.app/Contents/Resources/assets/`，右键 app →「显示包内容」，或直接用菜单里的“打开素材文件夹”）。
+官方立绘受版权保护，本仓库不包含图片文件。运行下面的脚本会从 Fernando2603/AzurLane（从游戏客户端提取的官方资源）下载贝尔法斯特全部 10 套皮肤的立绘和 Q 版小人到 `assets/official/`，再裁切、缩放到 `assets/skins/`：
 
-### 用脚本从带背景的图片自动抠图
+```bash
+python3 -m pip install pillow numpy
+tools/fetch_official.sh
+```
+
+得到的皮肤：改造、默认女仆装、彩云之玫瑰（旗袍）、Serene Steel（礼服）、Noble Attendant（晚礼服）、便服逛街、完美的代理店长（披萨店）、倾城之华扇（和服）、泳池坐姿、婚纱，以及每套对应的 Q 版小人。游戏里的立绘本身就是透明图层（场景背景单独加载），所以不需要抠图；「改造」和「泳池」用的是官方的去背景版（`painting_n`）。
+
+这些素材是 Manjuu / Yongshi / Yostar 的版权内容，仅限个人使用，请不要连同程序一起再分发。
+
+### 自己添加皮肤
+
+把透明背景 PNG 放进 `assets/skins/` 即可出现在菜单里。显示高度为 `config.ini` 的 `height`，但不超过原图高度的 2 倍，所以一两百像素的小图不会被拉糊。
+
+### 用脚本从带背景的图片抠图
 
 ```bash
 python3 -m pip install "rembg[cpu]" onnxruntime pillow numpy
-python3 tools/cutout.py 输入.jpg assets/belfast.png --model isnet-general-use
+python3 tools/cutout.py 输入.jpg "assets/skins/12-我的皮肤.png" --model birefnet-general-lite
 ```
 
-`--model` 可选 `isnet-general-use`（默认推荐）、`birefnet-general-lite`（细节更好，模型 200 MB）、`isnet-anime`。脚本会只保留最大的一块前景（去掉水印等零散块），并裁到人物边缘。首次运行会下载模型。
-
-`assets/skins/` 里是备选形象，把其中一张复制为 `assets/belfast.png` 即可切换：
-
-- `retrofit-maid.png`：改造后的女仆装（默认）
-- `casual.png`：红色贝雷帽便服
-
-这些抠图来自你自己提供的官方立绘，仅供个人使用，请不要再分发。
+`--model` 可选 `birefnet-general-lite`（效果最好，模型 200 MB）、`isnet-general-use`（较快）、`isnet-anime`（对白发白背景效果差）。脚本只保留最大的一块前景并裁到人物边缘，首次运行会下载模型。
 
 ### 序列帧模式（可选）
 
-如果你有逐帧动画，在 `assets/` 下建 `idle/ blink/ walk/ drag/ fall/ react/ sleep/` 目录，放入按文件名排序的 PNG 帧。存在目录的动作使用序列帧，没有的动作继续用单图姿态变换。所有帧按 `height` 缩放到同一高度。
+如果你有逐帧动画，在 `assets/` 下建 `idle/ blink/ walk/ drag/ fall/ react/ sleep/` 目录，放入按文件名排序的 PNG 帧。存在目录的动作使用序列帧，没有的动作继续用单图姿态变换。
 
 ## 配置 `assets/config.ini`
 
 ```ini
 [general]
-height=320            ; 显示高度（像素）
+skin=01-改造.png       ; 默认形象（assets/skins 里的文件名）
+height=320            ; 显示高度（像素），小图最多放大 2 倍
 mirror_left=1         ; 向左走时水平镜像
 walk_speed=40         ; 像素/秒
 sleep_after=180       ; 无操作多少秒后睡觉
@@ -99,7 +107,7 @@ clang++ -std=c++17 -I src tests/test_core.cpp src/core/*.cpp -o build/test_core 
 src/core/   ini（配置解析）、screen（全屏判定）、pose（姿态表）、brain（行为状态机）
 src/win/    Win32 分层窗口 + GDI+ 预渲染 + 托盘 + 注册表自启
 src/mac/    AppKit 非激活面板 + CALayer 变换 + 状态栏 + SMAppService 自启
-tools/      cutout.py 抠图；make_placeholder.py 生成占位图和图标
+tools/      fetch_official.sh 下载官方立绘；build_skins.py 裁切缩放；cutout.py 抠图；make_placeholder.py 图标
 ```
 
 - 单图模式下每个动作由 2–4 个“姿态”组成（位移、绕脚底旋转、缩放、变暗）。Windows 在启动时用 GDI+ 把每个不同姿态渲染成一张 32 位 DIB（约 12 张，320 px 高时合计约 4 MB），镜像帧按需生成一次；macOS 直接把姿态转成 CALayer 仿射变换，由合成器完成。
@@ -110,4 +118,5 @@ tools/      cutout.py 抠图；make_placeholder.py 生成占位图和图标
 
 - 单图模式没有真正的眨眼和口型；眨眼动作用轻微下蹲代替。想要更生动的效果需要自己准备序列帧。
 - 只在主显示器的工作区活动。
+- 「披萨店」「和服」两套是带场景的立体透视图，作为桌宠会显得像个小模型；「泳池」是坐姿。
 - macOS 版未签名；Windows 版未签名，SmartScreen 可能提示。

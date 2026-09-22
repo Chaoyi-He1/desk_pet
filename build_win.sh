@@ -16,9 +16,5 @@ mkdir -p build/win "$OUT"
 x86_64-w64-mingw32-strip "$OUT/BelfastPet.exe" 2>/dev/null || true
 
 rm -rf "$OUT/assets"
-mkdir -p "$OUT/assets"
-cp assets/belfast.png assets/config.ini assets/lines.txt assets/icon.ico assets/icon.png "$OUT/assets/"
-for d in idle blink walk drag fall react sleep skins; do
-  [ -d "assets/$d" ] && cp -R "assets/$d" "$OUT/assets/"
-done
+rsync -a --exclude official/ --exclude '*.jpg' --exclude '*.jpeg' --exclude .DS_Store assets/ "$OUT/assets/"
 echo "built $OUT/BelfastPet.exe"

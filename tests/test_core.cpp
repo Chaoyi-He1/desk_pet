@@ -3,6 +3,7 @@
 #include "core/screen.h"
 #include "core/pose.h"
 #include "core/brain.h"
+#include "core/skin.h"
 
 using namespace pet;
 
@@ -60,6 +61,23 @@ TEST(anim_names_match_asset_dirs) {
   CHECK(std::string(animName(Anim::Fall)) == "fall");
   CHECK(std::string(animName(Anim::React)) == "react");
   CHECK(std::string(animName(Anim::Sleep)) == "sleep");
+}
+
+// ---------- skin ----------
+TEST(skin_display_height_caps_upscale_at_2x) {
+  CHECK_EQ(displayHeight(320, 1200), 320);   // big picture: config height wins
+  CHECK_EQ(displayHeight(320, 150), 300);    // chibi: at most 2x native
+  CHECK_EQ(displayHeight(320, 160), 320);
+  CHECK_EQ(displayHeight(320, 10), 32);      // never below 32
+  CHECK_EQ(displayHeight(0, 1200), 32);
+}
+
+TEST(skin_display_name_strips_order_prefix) {
+  CHECK(skinDisplayName("01-改造.png") == "改造");
+  CHECK(skinDisplayName("Q版-01-改造.png") == "Q版 改造");
+  CHECK(skinDisplayName("04-Serene Steel 礼服.PNG") == "Serene Steel 礼服");
+  CHECK(skinDisplayName("belfast.png") == "belfast");
+  CHECK(skinDisplayName("11-改造 无舰装 手工抠图.png") == "改造 无舰装 手工抠图");
 }
 
 // ---------- brain ----------

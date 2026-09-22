@@ -24,8 +24,9 @@ public:
   SpriteSet(const SpriteSet&) = delete;
   SpriteSet& operator=(const SpriteSet&) = delete;
 
-  // `height` in points; `scale` is the backing scale factor (1 or 2).
-  bool load(const std::string& assetsDir, int height, double scale, std::string* err);
+  // `imagePath` is the base picture; `assetsDir` is searched for optional frame
+  // sequences. `height` in points (see pet::displayHeight); `scale` is the backing scale.
+  bool load(const std::string& assetsDir, const std::string& imagePath, int height, double scale, std::string* err);
 
   // Canvas (window) size in points and the picture placement inside it.
   int width() const { return cw_; }

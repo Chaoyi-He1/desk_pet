@@ -11,6 +11,7 @@
 #include <memory>
 
 #include "core/pose.h"
+#include "core/skin.h"
 
 namespace petwin {
 namespace {
@@ -69,7 +70,7 @@ void* SpriteSet::bitsOf(HBITMAP bmp) const {
   return nullptr;
 }
 
-bool SpriteSet::load(const std::wstring& assetsDir, int height, std::wstring* err) {
+bool SpriteSet::load(const std::wstring& assetsDir, const std::wstring& imagePath, int height, std::wstring* err) {
   using namespace Gdiplus;
   GdiplusStartupInput gsi;
   ULONG_PTR token = 0;
@@ -81,15 +82,14 @@ bool SpriteSet::load(const std::wstring& assetsDir, int height, std::wstring* er
   {
     std::unique_ptr<Bitmap> base;
     {
-      std::unique_ptr<Bitmap> raw(new Bitmap((assetsDir + L"\\belfast.png").c_str()));
+      std::unique_ptr<Bitmap> raw(new Bitmap(imagePath.c_str()));
       if (raw->GetLastStatus() == Ok && raw->GetWidth() > 0 && raw->GetHeight() > 0) {
         base.reset(raw->Clone(0, 0, raw->GetWidth(), raw->GetHeight(), PixelFormat32bppPARGB));
       }
     }
     std::vector<std::wstring> idleSeq = listPngs(assetsDir + L"\\idle");
     if (!base && idleSeq.empty()) {
-      if (err) *err = L"没有找到形象文件。\n\n请把透明背景的贝尔法斯特立绘保存为\n" + assetsDir +
-                      L"\\belfast.png\n然后重新启动。";
+      if (err) *err = L"没有找到形象文件：\n" + imagePath + L"\n\n请把透明背景的立绘 PNG 放到 assets\\skins 目录后重新启动。";
       GdiplusShutdown(token);
       return false;
     }
@@ -102,8 +102,7 @@ bool SpriteSet::load(const std::wstring& assetsDir, int height, std::wstring* er
       refW = first.GetWidth(); refH = first.GetHeight();
       if (refW <= 0 || refH <= 0) { refW = 1; refH = 2; }
     }
-    height = (std::max)(height, 32);
-    const int H = height;
+    const int H = pet::displayHeight(height, static_cast<int>(refH));
     const int W = (std::max)(1, static_cast<int>(std::lround(refW * H / refH)));
     const int padX = static_cast<int>(std::ceil(0.105 * H + 0.02 * W)) + 2;
     padTop_ = static_cast<int>(std::ceil(0.05 * H)) + 3;
