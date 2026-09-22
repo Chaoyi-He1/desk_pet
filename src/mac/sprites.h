@@ -25,14 +25,17 @@ public:
   SpriteSet& operator=(const SpriteSet&) = delete;
 
   // `imagePath` is the base picture; `assetsDir` is searched for optional frame
-  // sequences. `height` in points (see pet::displayHeight); `scale` is the backing scale.
-  bool load(const std::string& assetsDir, const std::string& imagePath, int height, double scale, std::string* err);
+  // sequences. `height` in points: used exactly when `exactHeight` is set (the user picked
+  // a size), otherwise capped by pet::displayHeight. `scale` is the backing scale.
+  bool load(const std::string& assetsDir, const std::string& imagePath, int height, bool exactHeight, double scale,
+            std::string* err);
 
   // Canvas (window) size in points and the picture placement inside it.
   int width() const { return cw_; }
   int height() const { return ch_; }
   int picW() const { return W_; }
   int picH() const { return H_; }
+  int picHeight() const { return H_; }
   int padTop() const { return padTop_; }
   int padBottom() const { return padBottom_; }
   int frameCount(pet::Anim a) const { return static_cast<int>(frames_[(int)a].size()); }

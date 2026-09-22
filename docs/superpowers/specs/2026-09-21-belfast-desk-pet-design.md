@@ -49,8 +49,9 @@ Windows 外壳在启动时用 GDI+ 把每个不同的姿态（含镜像）渲染
 ## 皮肤切换（2026-09-21 追加）
 
 - `assets/skins/*.png` 每个文件一套皮肤；右键菜单「切换形象」列出，显示名由 `core/skin.h` 的 `skinDisplayName` 去掉排序前缀得到。
-- 选择保存在用户数据目录的 `skin.txt`；解析顺序：保存的选择 → `config.ini` 的 `skin=` → `assets/belfast.png` → 第一个皮肤。
-- 显示高度 = `min(height, 2 × 原图高度)`（`displayHeight`），Q 版小人不被过度放大。
+- 皮肤与大小保存在用户数据目录的 `settings.ini`（`skin=` / `height=`）；皮肤解析顺序：保存的选择 → `config.ini` 的 `skin=` → `assets/belfast.png` → 第一个皮肤。
+- 显示高度：用户调过则精确使用其数值（`clampHeightToScreen`，96–1600 且不超过屏幕可用高度减 24）；没调过则 `min(height, 2 × 原图高度)`（`displayHeight`），Q 版小人不被过度放大。
+- 调整大小：鼠标滚轮（Win `WM_MOUSEWHEEL`，mac `scrollWheel:`）每格约 8%（`stepHeight`），或右键菜单「大小」选预设。滚轮事件累积后延迟 120 ms 再重新渲染，避免每格都重算全部姿态。
 - 切换时重新加载精灵集并重建状态机，保留横坐标，窗口尺寸随之改变。
 - 官方素材通过 `tools/fetch_official.sh` 从 Fernando2603/AzurLane 下载，不进 git。
 

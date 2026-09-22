@@ -81,15 +81,13 @@ static std::vector<std::string> listSkins(const std::string& skinsDir) {
   return out;
 }
 
-static std::string readSavedSkin() {
-  std::string s = readFile(userDataDir() + "/skin.txt");
-  while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
-  return s;
-}
+// User settings live in Application Support, so replacing assets/ never clobbers them.
+static std::string settingsFile() { return userDataDir() + "/settings.ini"; }
 
-static void writeSavedSkin(const std::string& name) {
-  std::ofstream out(userDataDir() + "/skin.txt", std::ios::binary | std::ios::trunc);
-  out << name;
+static void writeSettings(const std::string& skin, int height, bool userHeight) {
+  std::ofstream out(settingsFile(), std::ios::binary | std::ios::trunc);
+  out << "skin=" << skin << "\n";
+  if (userHeight) out << "height=" << height << "\n";
 }
 
 // Brain uses a top-left origin (y down); AppKit uses bottom-left (y up) on the main screen.
@@ -145,6 +143,7 @@ static double userIdleSeconds() {
 - (void)mousePressed:(NSEvent*)e;
 - (void)mouseMoved:(NSEvent*)e;
 - (void)mouseReleased;
+- (void)wheel:(NSEvent*)e;
 - (void)showMenu:(NSEvent*)e inView:(NSView*)v;
 @end
 
@@ -160,6 +159,7 @@ static double userIdleSeconds() {
 - (void)mouseDragged:(NSEvent*)e { [self.controller mouseMoved:e]; }
 - (void)mouseUp:(NSEvent*)e { [self.controller mouseReleased]; }
 - (void)rightMouseDown:(NSEvent*)e { [self.controller showMenu:e inView:self]; }
+- (void)scrollWheel:(NSEvent*)e { [self.controller wheel:e]; }
 @end
 
 @implementation PetController {
@@ -171,11 +171,15 @@ static double userIdleSeconds() {
   NSTimer* watchTimer_;
   std::unique_ptr<pet::Brain> brain_;
   std::unique_ptr<petmac::SpriteSet> sprites_;
-  std::string assets_, skinsDir_, configSkin_, currentSkin_;
+  std::string assets_, skinsDir_, configSkin_, currentSkin_, savedSkin_;
   std::vector<std::string> skins_;
   std::vector<std::string> lines_;
   pet::BrainConfig cfgBase_;
-  int height_;
+  int height_;          // current on-screen height
+  int configHeight_;    // height= from config.ini
+  bool userHeight_;     // true once the user picked a size themselves
+  int pendingWheel_;
+  NSTimer* resizeTimer_;
   int bubbleMs_;
   bool mirrorLeft_, hideOnFullscreen_, userHidden_, fsHidden_;
   int startX_;
@@ -202,7 +206,10 @@ static double userIdleSeconds() {
   shownMirror_ = false;
 
   skinsDir_ = assets_ + "/skins";
+  configHeight_ = height;
   height_ = height;
+  userHeight_ = false;
+  pendingWheel_ = 0;
   configSkin_ = ini.get("general", "skin", "");
   cfgBase_.walkSpeed = ini.getInt("general", "walk_speed", 40);
   cfgBase_.sleepAfterSec = ini.getInt("general", "sleep_after", 180);
@@ -212,6 +219,13 @@ static double userIdleSeconds() {
     cfgBase_.fps[i] = ini.getInt("fps", pet::animName((Anim)i), cfgBase_.fps[i]);
   lines_ = loadLines(assets_ + "/lines.txt");
   skins_ = listSkins(skinsDir_);
+
+  pet::Ini saved = pet::Ini::parse(readFile(settingsFile()));
+  if (saved.has("", "height")) {
+    height_ = pet::clampHeight(saved.getInt("", "height", configHeight_));
+    userHeight_ = true;
+  }
+  savedSkin_ = saved.get("", "skin", "");
 
   std::string err;
   std::string first = [self resolveSkin];
@@ -250,6 +264,10 @@ static double userIdleSeconds() {
     NSString* pfx = @(prefix);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
       [self snapshotTo:[pfx stringByAppendingString:@"_idle.png"]];
+      if (getenv("BELFASTPET_STEP")) {  // exercise the wheel/menu resize path
+        [self applyHeight:pet::stepHeight(height_, atoi(getenv("BELFASTPET_STEP")))];
+        [self snapshotTo:[pfx stringByAppendingString:@"_stepped.png"]];
+      }
       brain_->press(last_.x + sprites_->width() / 2, last_.y + sprites_->height() / 2);
       brain_->move(last_.x + sprites_->width() / 2 + 40, last_.y + sprites_->height() / 2 - 150);
       [self step:0];
@@ -280,8 +298,7 @@ static double userIdleSeconds() {
 
 - (std::string)resolveSkin {
   auto has = [&](const std::string& n) { return !n.empty() && std::find(skins_.begin(), skins_.end(), n) != skins_.end(); };
-  std::string saved = readSavedSkin();
-  if (has(saved)) return saved;
+  if (has(savedSkin_)) return savedSkin_;
   if (has(configSkin_)) return configSkin_;
   if (fileExists(assets_ + "/belfast.png")) return "";
   return skins_.empty() ? "" : skins_.front();
@@ -294,7 +311,9 @@ static double userIdleSeconds() {
 // Loads `name` (a file in skins/, or "" for assets/belfast.png) and rebuilds the brain.
 - (bool)loadSkin:(const std::string&)name error:(std::string*)err {
   std::unique_ptr<petmac::SpriteSet> next(new petmac::SpriteSet());
-  if (!next->load(assets_, [self skinPath:name], height_, NSScreen.mainScreen.backingScaleFactor, err)) return false;
+  if (!next->load(assets_, [self skinPath:name], height_, userHeight_, NSScreen.mainScreen.backingScaleFactor, err))
+    return false;
+  height_ = next->picHeight();
   int x = brain_ ? brain_->tick(0).x : -1;
   pet::BrainConfig cfg = cfgBase_;
   cfg.spriteW = next->width();
@@ -385,6 +404,59 @@ static double userIdleSeconds() {
   [panel_ displayIfNeeded];
 }
 
+// Applies a new on-screen height by re-rendering the current skin at that size.
+- (void)applyHeight:(int)height {
+  int h = pet::clampHeightToScreen(height, (int)NSScreen.mainScreen.visibleFrame.size.height);
+  if (h == height_ && userHeight_) return;
+  int prev = height_;
+  bool prevUser = userHeight_;
+  height_ = h;
+  userHeight_ = YES;
+  std::string err;
+  if (![self loadSkin:currentSkin_ error:&err]) {
+    height_ = prev;
+    userHeight_ = prevUser;
+    return;
+  }
+  writeSettings(currentSkin_, height_, userHeight_);
+  status_.menu = [self buildMenu];
+}
+
+- (void)resetHeight:(id)sender {
+  userHeight_ = NO;
+  height_ = configHeight_;
+  std::string err;
+  [self loadSkin:currentSkin_ error:&err];
+  writeSettings(currentSkin_, height_, userHeight_);
+  status_.menu = [self buildMenu];
+}
+
+- (void)stepSize:(NSMenuItem*)item { [self applyHeight:pet::stepHeight(height_, (int)item.tag)]; }
+- (void)pickSize:(NSMenuItem*)item { [self applyHeight:(int)item.tag]; }
+
+// Re-rendering every pose is not free, so collect wheel notches and resize once it stops.
+- (void)wheel:(NSEvent*)e {
+  double dy = e.scrollingDeltaY;
+  if (e.hasPreciseScrollingDeltas) dy /= 12.0;
+  if (dy > 0.5) pendingWheel_ += 1;
+  else if (dy < -0.5) pendingWheel_ -= 1;
+  else return;
+  [resizeTimer_ invalidate];
+  resizeTimer_ = [NSTimer scheduledTimerWithTimeInterval:0.12
+                                                  target:self
+                                                selector:@selector(applyPendingWheel)
+                                                userInfo:nil
+                                                 repeats:NO];
+}
+
+- (void)applyPendingWheel {
+  [resizeTimer_ invalidate];
+  resizeTimer_ = nil;
+  int notches = pendingWheel_;
+  pendingWheel_ = 0;
+  if (notches) [self applyHeight:pet::stepHeight(height_, notches)];
+}
+
 - (void)createStatusItem {
   status_ = [[NSStatusBar systemStatusBar] statusItemWithLength:NSSquareStatusItemLength];
   NSImage* img = [[NSImage alloc] initWithContentsOfFile:@((assets_ + "/icon.png").c_str())];
@@ -431,6 +503,30 @@ static double userIdleSeconds() {
   if (skinMenu.numberOfItems == 0) [[skinMenu addItemWithTitle:@"(assets/skins 里没有 PNG)" action:nil keyEquivalent:@""] setEnabled:NO];
   NSMenuItem* skinItem = [m addItemWithTitle:@"切换形象" action:nil keyEquivalent:@""];
   skinItem.submenu = skinMenu;
+
+  NSMenu* sizeMenu = [[NSMenu alloc] init];
+  NSMenuItem* up = [sizeMenu addItemWithTitle:@"放大（滚轮上）" action:@selector(stepSize:) keyEquivalent:@""];
+  up.target = self;
+  up.tag = 1;
+  NSMenuItem* down = [sizeMenu addItemWithTitle:@"缩小（滚轮下）" action:@selector(stepSize:) keyEquivalent:@""];
+  down.target = self;
+  down.tag = -1;
+  [sizeMenu addItem:[NSMenuItem separatorItem]];
+  for (int preset : pet::heightPresets()) {
+    NSMenuItem* it = [sizeMenu addItemWithTitle:[NSString stringWithFormat:@"%d 像素高", preset]
+                                         action:@selector(pickSize:)
+                                  keyEquivalent:@""];
+    it.target = self;
+    it.tag = preset;
+    it.state = preset == height_ ? NSControlStateValueOn : NSControlStateValueOff;
+  }
+  [sizeMenu addItem:[NSMenuItem separatorItem]];
+  NSMenuItem* reset = [sizeMenu addItemWithTitle:@"恢复默认大小" action:@selector(resetHeight:) keyEquivalent:@""];
+  reset.target = self;
+  NSMenuItem* sizeItem = [m addItemWithTitle:[NSString stringWithFormat:@"大小：%d 像素", height_]
+                                      action:nil
+                               keyEquivalent:@""];
+  sizeItem.submenu = sizeMenu;
   NSMenuItem* open = [m addItemWithTitle:@"打开素材文件夹" action:@selector(openAssets:) keyEquivalent:@""];
   open.target = self;
   [m addItem:[NSMenuItem separatorItem]];
@@ -465,7 +561,7 @@ static double userIdleSeconds() {
 - (void)pickSkin:(NSMenuItem*)item {
   std::string name = item.tag < 0 ? "" : skins_[(size_t)item.tag];
   std::string err;
-  if ([self loadSkin:name error:&err]) writeSavedSkin(name);
+  if ([self loadSkin:name error:&err]) writeSettings(name, height_, userHeight_);
   else {
     NSAlert* a = [[NSAlert alloc] init];
     a.messageText = @"BelfastPet";

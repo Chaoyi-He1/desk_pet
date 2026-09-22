@@ -22,6 +22,7 @@
 | 说一句台词 | 左键单击 |
 | 睡觉（变暗） | 用户 3 分钟没有键鼠操作 |
 | 切换形象（10 套官方皮肤 + 10 个 Q 版小人） | 右键菜单「切换形象」，选择会被记住 |
+| 调整大小 | 在宠物身上滚鼠标滚轮，或右键菜单「大小」选预设；设置会被记住 |
 | 菜单：显示 / 隐藏、全屏自动隐藏、开机自启、打开素材文件夹、退出 | 右键宠物，或托盘 / 状态栏图标 |
 
 ## 运行
@@ -32,7 +33,7 @@
 
 ## 形象文件
 
-形象放在 `assets/skins/`，每个 PNG 就是一套皮肤，右键菜单「切换形象」里按文件名列出（文件名开头的 `数字-` 只用于排序，不显示）。选择保存在用户目录（Windows `%APPDATA%\BelfastPet\skin.txt`，macOS `~/Library/Application Support/BelfastPet/skin.txt`），没有选择时用 `config.ini` 的 `skin=`。
+形象放在 `assets/skins/`，每个 PNG 就是一套皮肤，右键菜单「切换形象」里按文件名列出（文件名开头的 `数字-` 只用于排序，不显示）。没有选择过时用 `config.ini` 的 `skin=`。
 
 官方立绘受版权保护，本仓库不包含图片文件。运行下面的脚本会从 Fernando2603/AzurLane（从游戏客户端提取的官方资源）下载贝尔法斯特全部 10 套皮肤的立绘和 Q 版小人到 `assets/official/`，再裁切、缩放到 `assets/skins/`：
 
@@ -45,9 +46,19 @@ tools/fetch_official.sh
 
 这些素材是 Manjuu / Yongshi / Yostar 的版权内容，仅限个人使用，请不要连同程序一起再分发。
 
+### 调整大小
+
+在宠物身上滚鼠标滚轮就能放大缩小，一格约 8%。右键菜单「大小」里有 160 到 800 像素的预设，以及「恢复默认大小」。
+
+范围限制在 96 到 1600 像素之间，并且不会超过屏幕可用高度。手动调过之后，大小按你选的数值精确生效；没调过时用 `config.ini` 的 `height`，且小图最多放大到原图的 2 倍，避免 Q 版小人被拉糊。
+
+Windows 上滚轮缩放依赖系统的「悬停时滚动非活动窗口」设置（默认开启）。关掉的话用右键菜单即可。
+
+设置保存在用户目录，不在 `assets/` 里，更新素材不会覆盖：Windows 是 `%APPDATA%\BelfastPet\settings.ini`，macOS 是 `~/Library/Application Support/BelfastPet/settings.ini`。
+
 ### 自己添加皮肤
 
-把透明背景 PNG 放进 `assets/skins/` 即可出现在菜单里。显示高度为 `config.ini` 的 `height`，但不超过原图高度的 2 倍，所以一两百像素的小图不会被拉糊。
+把透明背景 PNG 放进 `assets/skins/` 即可出现在菜单里。
 
 ### 用脚本从带背景的图片抠图
 
@@ -67,7 +78,7 @@ python3 tools/cutout.py 输入.jpg "assets/skins/12-我的皮肤.png" --model bi
 ```ini
 [general]
 skin=01-改造.png       ; 默认形象（assets/skins 里的文件名）
-height=320            ; 显示高度（像素），小图最多放大 2 倍
+height=320            ; 默认显示高度（像素）；用滚轮或菜单调过之后以那个为准
 mirror_left=1         ; 向左走时水平镜像
 walk_speed=40         ; 像素/秒
 sleep_after=180       ; 无操作多少秒后睡觉

@@ -26,12 +26,15 @@ public:
   SpriteSet& operator=(const SpriteSet&) = delete;
 
   // `imagePath` is the base picture; `assetsDir` is searched for optional frame
-  // sequences. `height` is the configured on-screen height (see pet::displayHeight).
+  // sequences. `height` is the on-screen height: used exactly when `exactHeight` is set
+  // (the user picked a size), otherwise capped by pet::displayHeight.
   // On failure returns false and fills *err with a message for the user.
-  bool load(const std::wstring& assetsDir, const std::wstring& imagePath, int height, std::wstring* err);
+  bool load(const std::wstring& assetsDir, const std::wstring& imagePath, int height, bool exactHeight,
+            std::wstring* err);
 
   int width() const { return cw_; }    // canvas (window) size, same for all frames
   int height() const { return ch_; }
+  int picHeight() const { return picH_; }  // on-screen height of the picture itself
   int padTop() const { return padTop_; }
   int frameCount(pet::Anim a) const { return static_cast<int>(frames_[(int)a].size()); }
 
@@ -49,7 +52,7 @@ private:
   HBITMAP scratch_ = nullptr;
   void* scratchBits_ = nullptr;
   HBITMAP scratchSrc_ = nullptr;
-  int cw_ = 0, ch_ = 0, padTop_ = 0;
+  int cw_ = 0, ch_ = 0, padTop_ = 0, picH_ = 0;
 };
 
 }  // namespace petwin

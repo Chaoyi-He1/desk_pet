@@ -70,7 +70,8 @@ void* SpriteSet::bitsOf(HBITMAP bmp) const {
   return nullptr;
 }
 
-bool SpriteSet::load(const std::wstring& assetsDir, const std::wstring& imagePath, int height, std::wstring* err) {
+bool SpriteSet::load(const std::wstring& assetsDir, const std::wstring& imagePath, int height, bool exactHeight,
+                     std::wstring* err) {
   using namespace Gdiplus;
   GdiplusStartupInput gsi;
   ULONG_PTR token = 0;
@@ -102,7 +103,8 @@ bool SpriteSet::load(const std::wstring& assetsDir, const std::wstring& imagePat
       refW = first.GetWidth(); refH = first.GetHeight();
       if (refW <= 0 || refH <= 0) { refW = 1; refH = 2; }
     }
-    const int H = pet::displayHeight(height, static_cast<int>(refH));
+    const int H = exactHeight ? pet::clampHeight(height) : pet::displayHeight(height, static_cast<int>(refH));
+    picH_ = H;
     const int W = (std::max)(1, static_cast<int>(std::lround(refW * H / refH)));
     const int padX = static_cast<int>(std::ceil(0.105 * H + 0.02 * W)) + 2;
     padTop_ = static_cast<int>(std::ceil(0.05 * H)) + 3;

@@ -72,6 +72,46 @@ TEST(skin_display_height_caps_upscale_at_2x) {
   CHECK_EQ(displayHeight(0, 1200), 32);
 }
 
+TEST(skin_clamp_and_step_height) {
+  CHECK_EQ(clampHeight(50), kMinHeight);
+  CHECK_EQ(clampHeight(5000), kMaxHeight);
+  CHECK_EQ(clampHeight(320), 320);
+
+  CHECK(stepHeight(320, 1) > 320);
+  CHECK(stepHeight(320, -1) < 320);
+  CHECK_EQ(stepHeight(320, 1), 345);          // 8% of 320 = 25
+  CHECK_EQ(stepHeight(320, 0), 320);
+  CHECK(stepHeight(320, 3) > stepHeight(320, 1));
+  CHECK_EQ(stepHeight(kMaxHeight, 1), kMaxHeight);   // clamped, no runaway
+  CHECK_EQ(stepHeight(kMinHeight, -1), kMinHeight);
+  CHECK(stepHeight(100, -1) >= kMinHeight);
+  // every step must change the size by at least 8 px
+  CHECK(stepHeight(96, 1) - 96 >= 8);
+  // stepping up then down repeatedly stays inside the range
+  int h = 320;
+  for (int i = 0; i < 50; ++i) h = stepHeight(h, 1);
+  CHECK_EQ(h, kMaxHeight);
+  for (int i = 0; i < 80; ++i) h = stepHeight(h, -1);
+  CHECK_EQ(h, kMinHeight);
+}
+
+TEST(skin_clamp_height_to_screen) {
+  CHECK_EQ(clampHeightToScreen(320, 900), 320);
+  CHECK_EQ(clampHeightToScreen(1200, 900), 876);      // 900 - 24 margin
+  CHECK_EQ(clampHeightToScreen(9999, 0), kMaxHeight); // unknown screen: absolute limit only
+  CHECK_EQ(clampHeightToScreen(50, 900), kMinHeight);
+  CHECK_EQ(clampHeightToScreen(500, 100), kMinHeight); // tiny screen never goes below the floor
+}
+
+TEST(skin_height_presets_are_sorted_and_in_range) {
+  const std::vector<int>& p = heightPresets();
+  CHECK(!p.empty());
+  for (size_t i = 0; i < p.size(); ++i) {
+    CHECK(p[i] >= kMinHeight && p[i] <= kMaxHeight);
+    if (i) CHECK(p[i] > p[i - 1]);
+  }
+}
+
 TEST(skin_display_name_strips_order_prefix) {
   CHECK(skinDisplayName("01-改造.png") == "改造");
   CHECK(skinDisplayName("Q版-01-改造.png") == "Q版 改造");

@@ -34,9 +34,13 @@ const wchar_t* kClass = L"BelfastPetWindow";
 const wchar_t* kMutex = L"Local\\BelfastPet.SingleInstance";
 const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t* kRunName = L"BelfastPet";
-const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3;
+const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3, ID_RESIZE = 4;
 const UINT WM_TRAY = WM_APP + 1;
-enum { IDM_TOGGLE = 100, IDM_AUTOSTART, IDM_HIDE_FS, IDM_OPEN_ASSETS, IDM_EXIT, IDM_SKIN_BASE = 1000 };
+enum {
+  IDM_TOGGLE = 100, IDM_AUTOSTART, IDM_HIDE_FS, IDM_OPEN_ASSETS, IDM_EXIT,
+  IDM_SIZE_UP, IDM_SIZE_DOWN, IDM_SIZE_RESET,
+  IDM_SKIN_BASE = 1000, IDM_SIZE_BASE = 2000
+};
 
 struct App {
   HINSTANCE hinst = nullptr;
@@ -51,7 +55,10 @@ struct App {
   std::wstring configSkin;
   std::vector<std::string> lines;
   pet::BrainConfig cfgBase;             // everything except sprite size / frame counts
-  int height = 320;
+  int height = 320;                     // current on-screen height
+  int configHeight = 320;               // height= from config.ini
+  bool userHeight = false;              // true once the user picked a size themselves
+  int pendingWheel = 0;                 // wheel notches waiting for the debounce timer
 
   bool hideOnFullscreen = true;
   int bubbleMs = 3000;
@@ -150,26 +157,21 @@ std::vector<std::wstring> listSkins(const std::wstring& skinsDir) {
   return out;
 }
 
-std::wstring savedSkinFile() { return userDataDir() + L"\\skin.txt"; }
+// User settings live next to the executable's data, not in assets/, so an update of the
+// asset folder never clobbers them. Format: one key=value per line, UTF-8.
+std::wstring settingsFile() { return userDataDir() + L"\\settings.ini"; }
 
-std::wstring readSavedSkin() {
-  std::wstring w = widen(readFile(savedSkinFile()));
-  while (!w.empty() && (w.back() == L'\r' || w.back() == L'\n' || w.back() == L' ')) w.pop_back();
-  return w;
-}
-
-void writeSavedSkin(const std::wstring& name) {
-  std::string utf8 = narrow(name);
-  std::ofstream out(savedSkinFile().c_str(), std::ios::binary | std::ios::trunc);
-  out << utf8;
+void writeSettings(const App& app) {
+  std::ofstream out(settingsFile().c_str(), std::ios::binary | std::ios::trunc);
+  out << "skin=" << narrow(app.currentSkin) << "\n";
+  if (app.userHeight) out << "height=" << app.height << "\n";
 }
 
 // Picks the picture to show: saved choice → config.ini skin= → assets\belfast.png → first skin.
-std::wstring resolveSkin(App& app) {
+std::wstring resolveSkin(App& app, const std::wstring& saved) {
   auto has = [&](const std::wstring& n) {
     return !n.empty() && std::find(app.skins.begin(), app.skins.end(), n) != app.skins.end();
   };
-  std::wstring saved = readSavedSkin();
   if (has(saved)) return saved;
   if (has(app.configSkin)) return app.configSkin;
   if (fileExists(app.assetsDir + L"\\belfast.png")) return L"";
@@ -328,7 +330,8 @@ void updateHidden(App& app) {
 // sprites and brain are replaced; the pet keeps its x position and stays on the ground.
 bool loadSkin(App& app, const std::wstring& name, std::wstring* err) {
   std::unique_ptr<petwin::SpriteSet> next(new petwin::SpriteSet());
-  if (!next->load(app.assetsDir, skinPath(app, name), app.height, err)) return false;
+  if (!next->load(app.assetsDir, skinPath(app, name), app.height, app.userHeight, err)) return false;
+  app.height = next->picHeight();
 
   int x = app.brain ? app.brain->tick(0).x : -1;
   pet::BrainConfig cfg = app.cfgBase;
@@ -356,6 +359,24 @@ bool loadSkin(App& app, const std::wstring& name, std::wstring* err) {
   return true;
 }
 
+// Applies a new on-screen height by re-rendering the current skin at that size.
+void applyHeight(App& app, int height) {
+  RECT work = workArea(app.hwnd);
+  int h = pet::clampHeightToScreen(height, work.bottom - work.top);
+  if (h == app.height && app.userHeight) return;
+  int prev = app.height;
+  bool prevUser = app.userHeight;
+  app.height = h;
+  app.userHeight = true;
+  std::wstring err;
+  if (!loadSkin(app, app.currentSkin, &err)) {
+    app.height = prev;
+    app.userHeight = prevUser;
+    return;
+  }
+  writeSettings(app);
+}
+
 // ---------- menu / tray ----------
 
 void showMenu(App& app) {
@@ -374,6 +395,23 @@ void showMenu(App& app) {
   }
   if (GetMenuItemCount(skinMenu) == 0) AppendMenuW(skinMenu, MF_STRING | MF_GRAYED, 0, L"(assets\\skins 里没有 PNG)");
   AppendMenuW(m, MF_POPUP, (UINT_PTR)skinMenu, L"切换形象(&K)");
+
+  HMENU sizeMenu = CreatePopupMenu();
+  AppendMenuW(sizeMenu, MF_STRING, IDM_SIZE_UP, L"放大\t滚轮上");
+  AppendMenuW(sizeMenu, MF_STRING, IDM_SIZE_DOWN, L"缩小\t滚轮下");
+  AppendMenuW(sizeMenu, MF_SEPARATOR, 0, nullptr);
+  const std::vector<int>& presets = pet::heightPresets();
+  for (size_t i = 0; i < presets.size(); ++i) {
+    wchar_t label[64];
+    wsprintfW(label, L"%d 像素高", presets[i]);
+    AppendMenuW(sizeMenu, MF_STRING | (presets[i] == app.height ? MF_CHECKED : 0),
+                IDM_SIZE_BASE + (UINT)i, label);
+  }
+  AppendMenuW(sizeMenu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(sizeMenu, MF_STRING, IDM_SIZE_RESET, L"恢复默认大小");
+  wchar_t sizeLabel[64];
+  wsprintfW(sizeLabel, L"大小：%d 像素(&Z)", app.height);
+  AppendMenuW(m, MF_POPUP, (UINT_PTR)sizeMenu, sizeLabel);
   AppendMenuW(m, MF_STRING, IDM_OPEN_ASSETS, L"打开素材文件夹(&O)");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING, IDM_EXIT, L"退出(&X)");
@@ -398,6 +436,20 @@ void showMenu(App& app) {
     case IDM_OPEN_ASSETS:
       ShellExecuteW(nullptr, L"open", app.skinsDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
       break;
+    case IDM_SIZE_UP:
+      applyHeight(app, pet::stepHeight(app.height, 1));
+      break;
+    case IDM_SIZE_DOWN:
+      applyHeight(app, pet::stepHeight(app.height, -1));
+      break;
+    case IDM_SIZE_RESET: {
+      app.userHeight = false;
+      app.height = app.configHeight;
+      std::wstring err;
+      loadSkin(app, app.currentSkin, &err);
+      writeSettings(app);
+      break;
+    }
     case IDM_EXIT:
       DestroyWindow(app.hwnd);
       break;
@@ -405,8 +457,10 @@ void showMenu(App& app) {
       if (cmd >= IDM_SKIN_BASE && cmd < IDM_SKIN_BASE + 1 + (int)app.skins.size()) {
         std::wstring name = cmd == IDM_SKIN_BASE ? L"" : app.skins[cmd - IDM_SKIN_BASE - 1];
         std::wstring err;
-        if (loadSkin(app, name, &err)) writeSavedSkin(name);
+        if (loadSkin(app, name, &err)) writeSettings(app);
         else MessageBoxW(app.hwnd, err.c_str(), L"BelfastPet", MB_OK | MB_ICONWARNING);
+      } else if (cmd >= IDM_SIZE_BASE && cmd < IDM_SIZE_BASE + (int)pet::heightPresets().size()) {
+        applyHeight(app, pet::heightPresets()[cmd - IDM_SIZE_BASE]);
       }
       break;
   }
@@ -451,6 +505,11 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
           app->brain->release();
         }
         step(*app, 0);
+      } else if (wp == ID_RESIZE) {
+        KillTimer(h, ID_RESIZE);
+        int notches = app->pendingWheel;
+        app->pendingWheel = 0;
+        if (notches) applyHeight(*app, pet::stepHeight(app->height, notches));
       } else if (wp == ID_WATCH) {
         bool fs = app->hideOnFullscreen && foregroundIsFullscreen(*app);
         if (fs != app->fsHidden) {
@@ -485,6 +544,15 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       app->brain->release();
       step(*app, 0);
       return 0;
+    case WM_MOUSEWHEEL: {
+      // Re-rendering every pose is not free, so collect the notches and resize once the
+      // wheel stops. (Windows 10+ delivers wheel messages to the hovered window by default.)
+      int notches = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
+      if (notches == 0) notches = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 1 : -1;
+      app->pendingWheel += notches;
+      SetTimer(h, ID_RESIZE, 120, nullptr);
+      return 0;
+    }
     case WM_RBUTTONUP:
       showMenu(*app);
       return 0;
@@ -525,7 +593,8 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
 
   app.skinsDir = app.assetsDir + L"\\skins";
   pet::Ini ini = pet::Ini::parse(readFile(app.assetsDir + L"\\config.ini"));
-  app.height = ini.getInt("general", "height", 320);
+  app.configHeight = ini.getInt("general", "height", 320);
+  app.height = app.configHeight;
   app.mirrorLeft = ini.getInt("general", "mirror_left", 1) != 0;
   app.hideOnFullscreen = ini.getInt("general", "hide_on_fullscreen", 1) != 0;
   app.bubbleMs = ini.getInt("general", "bubble_ms", 3000);
@@ -540,8 +609,14 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   app.lines = loadLines(app.assetsDir + L"\\lines.txt");
   app.skins = listSkins(app.skinsDir);
 
+  pet::Ini saved = pet::Ini::parse(readFile(settingsFile()));
+  if (saved.has("", "height")) {
+    app.height = pet::clampHeight(saved.getInt("", "height", app.configHeight));
+    app.userHeight = true;
+  }
+
   std::wstring err;
-  std::wstring first = resolveSkin(app);
+  std::wstring first = resolveSkin(app, widen(saved.get("", "skin", "")));
   if (!loadSkin(app, first, &err) && (first.empty() || !loadSkin(app, L"", &err))) {
     MessageBoxW(nullptr, err.c_str(), L"BelfastPet", MB_OK | MB_ICONWARNING);
     return 1;

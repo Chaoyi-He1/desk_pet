@@ -58,8 +58,8 @@ CGImageRef SpriteSet::loadScaled(const std::string& path, std::vector<unsigned c
   return img;
 }
 
-bool SpriteSet::load(const std::string& assetsDir, const std::string& imagePath, int height, double scale,
-                     std::string* err) {
+bool SpriteSet::load(const std::string& assetsDir, const std::string& imagePath, int height, bool exactHeight,
+                     double scale, std::string* err) {
   using pet::Anim;
   scale_ = scale;
   const std::string& basePath = imagePath;
@@ -73,7 +73,7 @@ bool SpriteSet::load(const std::string& assetsDir, const std::string& imagePath,
   if (probe) { refW = CGImageGetWidth(probe); refH = CGImageGetHeight(probe); CGImageRelease(probe); }
   else if (CGImageRef f = decode(idleSeq[0])) { refW = CGImageGetWidth(f); refH = CGImageGetHeight(f); CGImageRelease(f); }
 
-  H_ = pet::displayHeight(height, static_cast<int>(refH));
+  H_ = exactHeight ? pet::clampHeight(height) : pet::displayHeight(height, static_cast<int>(refH));
   W_ = std::max(1, static_cast<int>(std::lround(refW * H_ / refH)));
   int padX = static_cast<int>(std::ceil(0.105 * H_ + 0.02 * W_)) + 2;
   padTop_ = static_cast<int>(std::ceil(0.05 * H_)) + 3;
