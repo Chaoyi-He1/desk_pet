@@ -20,6 +20,7 @@ const Table& table(Anim a) {
   static const Table kReact {4, {P(0, 0, 0, 1.04, 0.94),  P(0, 0, 0, 0.98, 1.05),
                                  P(0, 0, 0, 1, 0.98),     P(0, 0, 0, 1, 1)}};
   static const Table kSleep {2, {P(0, 3, 0, 1, 1, 0.6),   P(0, 4, 0, 1, 1, 0.6)}};
+  static const Table kLand  {3, {P(0, 0, 0, 1.06, 0.9),   P(0, 0, 0, 0.98, 1.03), P(0, 0, 0, 1, 1)}};
   switch (a) {
     case Anim::Blink: return kBlink;
     case Anim::Walk: return kWalk;
@@ -27,6 +28,7 @@ const Table& table(Anim a) {
     case Anim::Fall: return kFall;
     case Anim::React: return kReact;
     case Anim::Sleep: return kSleep;
+    case Anim::Land: return kLand;
     default: return kIdle;
   }
 }

@@ -16,5 +16,5 @@ mkdir -p build/win "$OUT"
 x86_64-w64-mingw32-strip "$OUT/BelfastPet.exe" 2>/dev/null || true
 
 rm -rf "$OUT/assets"
-rsync -a --exclude official/ --exclude '*.jpg' --exclude '*.jpeg' --exclude .DS_Store assets/ "$OUT/assets/"
+rsync -a --delete --exclude /official/ --exclude /skins/ --exclude /voice/ --exclude /belfast.png --exclude '*.jpg' --exclude '*.jpeg' --exclude .DS_Store assets/ "$OUT/assets/"
 echo "built $OUT/BelfastPet.exe"

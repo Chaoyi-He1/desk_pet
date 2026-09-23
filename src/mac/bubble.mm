@@ -82,7 +82,7 @@ static const CGFloat kPad = 10, kTail = 8, kMaxText = 240, kRadius = 12;
 }
 
 - (void)moveToAnchorX:(double)ax anchorY:(double)ay {
-  if (!panel_.visible && !view_.text) return;
+  if (!panel_.visible) return;
   NSRect f = panel_.frame;
   NSRect work = NSScreen.mainScreen.visibleFrame;
   CGFloat x = ax - f.size.width / 2, y = ay + 2;  // bubble sits above the anchor (y up)

@@ -180,3 +180,34 @@ sleep=1
 - `dist/BelfastPet-win/BelfastPet.exe` 及 `assets/` 目录，解压即可运行。
 - `dist/BelfastPet.app`，双击运行；`assets/` 放在 app 包的 `Contents/Resources/` 内。
 - `README.md`：使用方法、替换精灵图的方法、构建方法、资源占用说明。
+
+## 多角色与 Q 版动画（2026-09-22 追加）
+
+### 素材结构
+
+`assets/ships/<角色>/` 下有 `ship.ini`、`skins/`（立绘 PNG 和 Q 版动画文件夹）、`voices.tsv`。角色和皮肤的对应关系在 `tools/ships.json` 里人工维护：皮肤编号、名称、立绘文件（含皮肤 ID）、Q 版模型名、WIKI 台词表标题。编号决定菜单顺序和台词对应。
+
+### Q 版动画
+
+- 模型来自游戏本体（模拟器中下载的 `char/<模型名>` 资源包，UnityPy 解包得到 `.skel`/`.atlas`/贴图）。
+- `tools/spine/` 按公开的 Spine 3.8 二进制格式自行实现解析、姿态计算（骨骼、双骨骼 IK、世界/局部与绝对/相对变换约束、网格变形、绘制顺序、颜色）、裁剪遮罩和光栅化（C，3 倍超采样），不使用 Spine 官方运行库。
+- 每个状态从候选动画中自动选择：可见范围超过最小待机 1.8 倍的动画跳过；待机取最短的合格循环；可选的一次性动作超过 5 秒跳过。
+- 帧率 10 fps，按待机身高 480 px 导出，pngquant 压缩为 256 色。所有状态共用一块画布和一条地面线。
+- `meta.ini`：fps、画布尺寸、地面偏移（ground）、头顶位置（head_top）、身高（char_height）、头部点击区比例。
+
+### 状态机变化
+
+- `Anim` 新增 `Land`（落地后的一次性动作）。
+- 每个状态可有多个变体：`blink_*` 为随机待机动作，`react` / `react_head` 为点身体 / 点头部的反应。缺失的必需状态退回待机帧；缺失的可选状态（Blink、Land、React）跳过。
+- `Frame` 带 `variant` 和 `event`（TapBody、TapHead、Woke），不再携带台词文本；台词由外壳根据事件用 `VoiceBank` 选取。
+- `groundInset`：画布底边到脚底的距离；`headFraction`：画布顶部多大比例算头部。
+- 拖拽时允许画布顶部超出屏幕三分之一。
+
+### 台词
+
+`VoiceBank` 按场景键（login、touch/touch2、headtouch、home、main/detail）挑选：先找当前皮肤，再找角色默认台词表，最后任意皮肤；誓约台词只在誓约皮肤使用；避免与上一句重复。气泡时长按字数计算（1.2 秒 + 每字 0.11 秒，最长 10 秒）。
+
+### 运行时内存
+
+- Windows：动画帧在首次显示时解码并缩放到屏幕尺寸，裁到可见区域，存为 DIB；只保留待机和当前状态的帧。
+- macOS：帧按源分辨率解码后存为调色板索引（每像素 1 字节），只在显示时展开当前帧为 BGRA；缩放由 Core Animation 完成。只保留待机和当前状态。

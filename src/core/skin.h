@@ -78,4 +78,26 @@ inline std::string skinDisplayName(const std::string& fileName) {
   return out.empty() ? stem : out;
 }
 
+// First all-digit '-'-separated token of a skin file or folder name, e.g.
+// "01-改造.png" -> "01", "Q版-07-泳装" -> "07". Empty when there is none.
+inline std::string skinNumber(const std::string& fileName) {
+  std::string cur;
+  auto flush = [&](std::string& out) {
+    if (!cur.empty() && std::all_of(cur.begin(), cur.end(), [](unsigned char c) { return std::isdigit(c) != 0; }))
+      out = cur;
+    cur.clear();
+  };
+  std::string out;
+  for (char c : fileName) {
+    if (c == '-' || c == '.') {
+      flush(out);
+      if (!out.empty()) return out;
+    } else {
+      cur += c;
+    }
+  }
+  flush(out);
+  return out;
+}
+
 }  // namespace pet

@@ -2,9 +2,9 @@
 
 namespace pet {
 
-enum class Anim { Idle = 0, Blink, Walk, Drag, Fall, React, Sleep, Count };
+enum class Anim { Idle = 0, Blink, Walk, Drag, Fall, React, Sleep, Land, Count };
 
-// Lower-case name; also the sub-directory name for frame sequences under assets/.
+// Lower-case name; also the folder name of a frame sequence inside an animated skin.
 inline const char* animName(Anim a) {
   switch (a) {
     case Anim::Idle: return "idle";
@@ -14,8 +14,12 @@ inline const char* animName(Anim a) {
     case Anim::Fall: return "fall";
     case Anim::React: return "react";
     case Anim::Sleep: return "sleep";
+    case Anim::Land: return "land";
     default: return "idle";
   }
 }
+
+// One-shot animations play once and return to Idle.
+inline bool isOneShot(Anim a) { return a == Anim::Blink || a == Anim::React || a == Anim::Land; }
 
 }  // namespace pet

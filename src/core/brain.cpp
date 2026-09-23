@@ -5,9 +5,13 @@
 
 namespace pet {
 
-Brain::Brain(const BrainConfig& cfg, std::vector<std::string> lines, unsigned seed)
-    : cfg_(cfg), lines_(std::move(lines)), rng_(seed) {
-  for (int& n : cfg_.frameCount) n = std::max(n, 1);
+Brain::Brain(const BrainConfig& cfg, unsigned seed) : cfg_(cfg), rng_(seed) {
+  for (auto& v : cfg_.variants)
+    for (int& n : v) n = std::max(n, 1);
+  if (cfg_.variants[(int)Anim::Idle].empty()) cfg_.variants[(int)Anim::Idle] = {1};
+  // States every shell must be able to show fall back to idle's frames.
+  for (Anim a : {Anim::Walk, Anim::Drag, Anim::Fall, Anim::Sleep})
+    if (!available(a)) cfg_.variants[(int)a] = cfg_.variants[(int)Anim::Idle];
   for (int& f : cfg_.fps) f = std::max(f, 1);
   scheduleIdleEvent();
 }
@@ -75,19 +79,24 @@ void Brain::release() {
     }
     return;
   }
-  // Plain click.
-  if (!lines_.empty()) {
-    std::uniform_int_distribution<size_t> pick(0, lines_.size() - 1);
-    pendingSay_ = lines_[pick(rng_)];
+  // Plain click: the top part of the canvas is the head.
+  bool head = offY_ < cfg_.headFraction * cfg_.spriteH;
+  pendingEvent_ = head ? PetEvent::TapHead : PetEvent::TapBody;
+  if (available(Anim::React)) {
+    int variants = static_cast<int>(cfg_.variants[(int)Anim::React].size());
+    enter(Anim::React, head && variants > 1 ? 1 : 0);
   }
-  enter(Anim::React);
 }
 
 Frame Brain::tick(int dtMs) {
   if (!hidden_) {
     bool restful = anim_ == Anim::Idle || anim_ == Anim::Blink || anim_ == Anim::Walk;
-    if (sleepy_ && restful) enter(Anim::Sleep);
-    else if (!sleepy_ && anim_ == Anim::Sleep) enter(Anim::Idle);
+    if (sleepy_ && restful) {
+      enter(Anim::Sleep);
+    } else if (!sleepy_ && anim_ == Anim::Sleep) {
+      enter(Anim::Idle);
+      pendingEvent_ = PetEvent::Woke;
+    }
 
     if (dtMs > 0) {
       Anim before = anim_;
@@ -96,8 +105,10 @@ Frame Brain::tick(int dtMs) {
           idleEventMs_ -= dtMs;
           if (idleEventMs_ <= 0) {
             std::uniform_real_distribution<double> u(0.0, 1.0);
-            if (u(rng_) < 0.4 || !chooseWalkTarget()) enter(Anim::Blink);
-            else enter(Anim::Walk);
+            bool action = available(Anim::Blink) && (!cfg_.canWalk || u(rng_) < 0.4);
+            if (!action && cfg_.canWalk && chooseWalkTarget()) enter(Anim::Walk);
+            else if (available(Anim::Blink)) enter(Anim::Blink);
+            else scheduleIdleEvent();
           }
           break;
         case Anim::Walk: {
@@ -116,7 +127,7 @@ Frame Brain::tick(int dtMs) {
           if (y_ >= groundTop()) {
             y_ = groundTop();
             vy_ = 0;
-            enter(Anim::Idle);
+            enter(available(Anim::Land) ? Anim::Land : Anim::Idle);
           }
           break;
         default:
@@ -129,22 +140,28 @@ Frame Brain::tick(int dtMs) {
 
   Frame f;
   f.anim = anim_;
+  f.variant = variant_;
   f.index = index_;
   f.facingLeft = facingLeft_;
   f.x = static_cast<int>(std::lround(x_));
   f.y = static_cast<int>(std::lround(y_));
   f.visible = !hidden_;
-  f.say = std::move(pendingSay_);
-  pendingSay_.clear();
+  f.event = pendingEvent_;
+  pendingEvent_ = PetEvent::None;
   if (hidden_) f.nextTickMs = 0;
   else if (anim_ == Anim::Fall) f.nextTickMs = 33;
   else f.nextTickMs = 1000 / cfg_.fps[(int)anim_];
-  f.dirty = !hasLast_ || f.anim != last_.anim || f.index != last_.index ||
-            f.facingLeft != last_.facingLeft || f.x != last_.x || f.y != last_.y ||
-            f.visible != last_.visible;
+  f.dirty = !hasLast_ || f.anim != last_.anim || f.variant != last_.variant || f.index != last_.index ||
+            f.facingLeft != last_.facingLeft || f.x != last_.x || f.y != last_.y || f.visible != last_.visible;
   last_ = f;
   hasLast_ = true;
   return f;
+}
+
+int Brain::frames() const {
+  const std::vector<int>& v = cfg_.variants[(int)anim_];
+  if (v.empty()) return 1;
+  return v[static_cast<size_t>(variant_) % v.size()];
 }
 
 void Brain::advanceAnimation(int dtMs) {
@@ -152,9 +169,9 @@ void Brain::advanceAnimation(int dtMs) {
   int period = 1000 / cfg_.fps[(int)anim_];
   while (frameAccMs_ >= period) {
     frameAccMs_ -= period;
-    if (++index_ >= frames(anim_)) {
+    if (++index_ >= frames()) {
       index_ = 0;
-      if (anim_ == Anim::Blink || anim_ == Anim::React) {
+      if (isOneShot(anim_)) {
         enter(Anim::Idle);
         break;
       }
@@ -162,14 +179,16 @@ void Brain::advanceAnimation(int dtMs) {
   }
 }
 
-void Brain::enter(Anim a) {
+void Brain::enter(Anim a, int variant) {
   anim_ = a;
   index_ = 0;
   frameAccMs_ = 0;
+  int n = static_cast<int>(cfg_.variants[(int)a].size());
+  if (variant >= 0) variant_ = n ? variant % n : 0;
+  else if (a == Anim::Blink && n > 1) variant_ = std::uniform_int_distribution<int>(0, n - 1)(rng_);
+  else variant_ = 0;
   if (a == Anim::Idle) scheduleIdleEvent();
 }
-
-int Brain::frames(Anim a) const { return cfg_.frameCount[(int)a]; }
 
 void Brain::scheduleIdleEvent() {
   std::uniform_int_distribution<int> d(cfg_.idleMinMs, std::max(cfg_.idleMinMs, cfg_.idleMaxMs));
@@ -199,7 +218,7 @@ int Brain::clampX(double x) const {
 
 int Brain::clampY(double y) const {
   int hi = std::max(workTop_, groundTop());
-  return static_cast<int>(std::lround(std::min<double>(std::max<double>(y, workTop_), hi)));
+  return static_cast<int>(std::lround(std::min<double>(std::max<double>(y, workTop_ - cfg_.spriteH / 3), hi)));
 }
 
 }  // namespace pet

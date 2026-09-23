@@ -3,9 +3,11 @@ dist/
 .DS_Store
 log/
 __pycache__/
-# user-supplied source pictures (copyrighted); keep only the cut-outs the app needs
+tools/spine/_raster.so
+# Copyrighted game content: sources and everything generated from them stay local.
 assets/*.jpg
 assets/*.jpeg
-# official game art downloaded by tools/fetch_official.sh (copyrighted, local only)
 assets/official/
-assets/skins/*.png
+assets/ships/
+assets/skins/
+assets/voice/
