@@ -179,17 +179,26 @@ const SpriteSet::Cached* SpriteSet::decode(int a, int v, int i) {
   c.x0 = x0; c.y0 = y0; c.w = x1 - x0 + 1; c.h = y1 - y0 + 1;
   // The frames are 256-colour PNGs: keep one byte per pixel plus a palette.
   std::unordered_map<uint32_t, unsigned char> lut;
+  lut.reserve(512);
+  uint32_t lastCol = 0x01000000;  // not a premultiplied colour, so never matches
+  unsigned char lastIdx = 0;
   c.index.resize((size_t)c.w * c.h);
   bool indexed = true;
   for (int y = 0; y < c.h && indexed; ++y)
     for (int x = 0; x < c.w; ++x) {
       uint32_t col = px[(size_t)(y0 + y) * w + x0 + x];
+      if (col == lastCol) {  // runs of one colour are common: skip the hash lookup
+        c.index[(size_t)y * c.w + x] = lastIdx;
+        continue;
+      }
       auto f = lut.find(col);
       if (f == lut.end()) {
         if (lut.size() == 256) { indexed = false; break; }
         f = lut.emplace(col, (unsigned char)lut.size()).first;
         c.palette.push_back(col);
       }
+      lastCol = col;
+      lastIdx = f->second;
       c.index[(size_t)y * c.w + x] = f->second;
     }
   if (!indexed) {  // more than 256 colours: keep full colour
@@ -211,10 +220,12 @@ MacFrame SpriteSet::get(Anim a, int variant, int index) {
     return f;
   }
   int ai = paths_[(int)a].empty() ? (int)Anim::Idle : (int)a;
-  if (ai != lastAnim_) {  // keep idle (common) and the current state only
-    for (auto it = cache_.begin(); it != cache_.end();)
-      if (std::get<0>(it->first) != (int)Anim::Idle && std::get<0>(it->first) != ai) it = cache_.erase(it);
+  if (ai != lastAnim_) {  // keep idle and walk (most of the time) and the current state
+    for (auto it = cache_.begin(); it != cache_.end();) {
+      int k = std::get<0>(it->first);
+      if (k != (int)Anim::Idle && k != (int)Anim::Walk && k != ai) it = cache_.erase(it);
       else ++it;
+    }
     lastAnim_ = ai;
   }
   int v = (int)((size_t)variant % paths_[ai].size());

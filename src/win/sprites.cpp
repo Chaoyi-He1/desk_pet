@@ -296,9 +296,10 @@ SpriteFrame SpriteSet::mirror(const SpriteFrame& f) {
 }
 
 void SpriteSet::evictExcept(Anim keep) {
+  // Idle and walk are shown most of the time; everything else is decoded on demand.
   for (auto it = cache_.begin(); it != cache_.end();) {
     int a = std::get<0>(it->first);
-    if (a != (int)Anim::Idle && a != (int)keep) {
+    if (a != (int)Anim::Idle && a != (int)Anim::Walk && a != (int)keep) {
       DeleteObject(it->second.bmp);
       it = cache_.erase(it);
     } else {

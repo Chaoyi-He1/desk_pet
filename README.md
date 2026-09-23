@@ -9,13 +9,20 @@
 - 所有画面都是预先渲染好的，运行时只切换帧，不跑骨骼动画运行库。
 - Windows 进程优先级设为“低于正常”，并开启系统的效率模式。
 
-资源占用实测见文末。
+资源占用实测（macOS，M 系列芯片，Retina 屏）：
+
+| 形象 | 内存 | CPU（单核） |
+|---|---|---|
+| 立绘 | 23 MB | 0–0.1% |
+| Q 版动画 | 29 MB | 0.4–2.8%，平均约 1.8%；走动时最高，待机时最低 |
+
+Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测过占用。
 
 ## 功能
 
 | 行为 | 说明 |
 |---|---|
-| 待机、随机走动 | Q 版形象待机时还会随机坐下、跳舞或做胜利动作 |
+| 待机 | 立绘形象待在原地轻微呼吸；Q 版形象会随机走动，还会随机坐下、跳舞或做胜利动作 |
 | 拖拽 | 左键按住拖动，Q 版会做出被提起来的动作 |
 | 下落 | 在半空松手会掉下来，Q 版落地后会晕一下 |
 | 点击 | 点身体说触摸台词，点头部说摸头台词，Q 版有对应的反应动作 |
@@ -60,11 +67,12 @@ voices.tsv               官方台词：皮肤编号、场景、中文、日文
 
 ### 生成步骤
 
-需要 Python 3 + Pillow + numpy + UnityPy，以及 `pngquant`（压缩帧，macOS 上 `brew install pngquant`）。
+需要 Python 3 + Pillow + numpy + UnityPy，以及 `pngquant`（压缩帧，macOS 上 `brew install pngquant`）。超分辨率这一步另外需要 PyTorch 和 Real-ESRGAN 的动漫模型权重 `RealESRGAN_x4plus_anime_6B.pth`（[xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) 官方发布，BSD-3-Clause），放在 `assets/official/models/`。
 
 ```bash
 python3 tools/fetch_paintings.py
 python3 tools/extract_from_device.py assets/official/game --match beierfasite --only char
+python3 tools/spine/upscale.py      # 可选：Q 版贴图放大 2 倍，显示更清晰
 python3 tools/build_ships.py
 ```
 
@@ -79,6 +87,10 @@ python3 tools/build_ships.py
 游戏的 Q 版小人是 Spine 3.8 骨骼动画。`tools/spine/` 按公开的二进制格式说明读取 `.skel` 和 `.atlas`，自己计算骨骼、IK 和变换约束、网格变形、裁剪遮罩，再用一个小的 C 光栅化器以 3 倍超采样画成 PNG 帧。它没有使用 Spine 官方运行库（其许可要求使用者持有 Spine 编辑器授权）。
 
 每个状态会从几个候选动画里自动挑选：待机选最短的平静循环，跳过会把画面撑得很大的华丽动作。帧按角色身高 480 像素导出，再用 pngquant 压缩成 256 色。
+
+游戏里 Q 版的原始贴图很小（小人约 265 像素高），直接放大会发虚。`tools/spine/upscale.py` 先用 Real-ESRGAN 动漫模型把贴图放大 2 倍再渲染，Retina 屏上默认大小基本是 1:1 显示。网络结构在脚本里自己定义，权重以只读张量方式加载。
+
+运行时 macOS 把帧存成调色板索引（每像素 1 字节），只在显示时把当前帧展开到两块轮流使用的 IOSurface 里；Windows 在首次显示时解码并缩放到屏幕尺寸。两边都只常驻待机和走路的帧，其余动作用到时再解码。
 
 ## 配置 `assets/config.ini`
 
@@ -117,5 +129,6 @@ clang++ -std=c++17 -I src tests/test_core.cpp src/core/*.cpp -o build/test_core 
 - 只在主显示器的工作区活动。
 - 只显示台词文字，不播放语音。
 - 部分皮肤在游戏里有更华丽的待机动作（荡秋千、魔术柜等），因为画面太大，桌宠里换成了普通待机。
+- 立绘是静态图。游戏里的动态立绘（大尺寸骨骼动画）和 Live2D 皮肤没有做：前者常驻内存要多 40–60 MB，后者需要 Live2D 的专有运行库。
 - Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测试过。
 - macOS 和 Windows 版都没有签名。
