@@ -621,6 +621,29 @@ def ground_patch_alpha(cut_alpha, full_alpha, gp):
     return np.maximum(cut_alpha.astype(np.float32), full_alpha.astype(np.float32) * m).astype(np.uint8)
 
 
+def render_still(skel_path, png, picture_px=1200, ss=2, hide_slots=()):
+    """One full-resolution picture of a dynamic painting (the first idle frame, hidden slots
+    left out), cropped to what is visible: a background-free replacement for official
+    paintings that come with their scenery baked in. Returns (W, H)."""
+    m = open_painting(skel_path)
+    if hide_slots:
+        m.hide_slots(hide_slots)
+    base = idle_animation(m)
+    times = frame_times(base, 8.0)
+    vb = m.visible_box([(base, times)], step=2)
+    if vb is None:
+        raise SystemExit(f"{m.name}: nothing visible in '{base.name}'")
+    scale = picture_px / (vb[3] - vb[1])
+    pad = 4.0 / scale
+    img = Image.fromarray(m.render(base, 0.0, (vb[0] - pad, vb[1] - pad, vb[2] + pad, vb[3] + pad), scale, ss), "RGBA")
+    bb = img.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+    if bb:
+        img = img.crop(bb)
+    os.makedirs(os.path.dirname(os.path.abspath(png)), exist_ok=True)
+    img.save(png, optimize=True)
+    return img.size
+
+
 def export_painting(skel_path, out_dir, fps=8.0, picture_px=720, expressions=None, ss=3, log=print, hide_slots=(),
                     ground_patch=None):
     """Pre-render a dynamic painting (Azur Lane spinepainting) for BelfastPet.

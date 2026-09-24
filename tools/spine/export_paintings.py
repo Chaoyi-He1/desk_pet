@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Export the dynamic paintings listed in tools/spine/paintings.json to
-assets/official/dynamic/<name>/ (frame folders + meta.ini), in parallel.
+assets/official/dynamic/<name>/ (frame folders + meta.ini), in parallel, plus a
+background-free still at assets/official/stills/<name>.png (used as the static painting
+of skins whose official picture has its scenery baked in).
 
   python3 tools/spine/export_paintings.py [NAME ...]
 """
@@ -14,6 +16,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(ROOT, "assets", "official", "dynamic")
+STILLS = os.path.join(ROOT, "assets", "official", "stills")
 
 
 def export_one(name, cfg):
@@ -29,6 +32,8 @@ def export_one(name, cfg):
     lines = []
     w, h = render38.export_painting(skel, dst, expressions=cfg.get("expressions"), hide_slots=hide, log=lines.append,
                                     ground_patch=cfg.get("ground_patch"))
+    sw, sh = render38.render_still(skel, os.path.join(STILLS, name + ".png"), hide_slots=hide)
+    lines.append(f"still {sw}x{sh}")
     size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(dst) for f in fs)
     counts = {d: len(os.listdir(os.path.join(dst, d))) for d in sorted(os.listdir(dst)) if os.path.isdir(os.path.join(dst, d))}
     return name, w, h, size, counts, len(hide), lines

@@ -7,10 +7,10 @@
 namespace pet {
 
 // What just happened, from the shell's point of view.
-enum class Scene { Login, TapBody, TapHead, Home, Chatter };
+enum class Scene { Login, TapBody, TapHead, TapSpecial, Home, Chatter };
 
-// Wiki/game line keys to try for a scene, in order of preference. TapBody sometimes
-// (25%) prefers the "special touch" line.
+// Wiki/game line keys to try for a scene, in order of preference. TapSpecial prefers the
+// "special touch" line (the Brain decides which body taps are special).
 std::vector<std::string> sceneKeys(Scene s, std::mt19937& rng);
 
 struct Line {

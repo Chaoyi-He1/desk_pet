@@ -405,6 +405,7 @@ void step(App& app, int dtMs) {
   switch (f.event) {
     case pet::PetEvent::TapBody: say(app, pet::Scene::TapBody); break;
     case pet::PetEvent::TapHead: say(app, pet::Scene::TapHead); break;
+    case pet::PetEvent::TapSpecial: say(app, pet::Scene::TapSpecial); break;
     case pet::PetEvent::Woke: say(app, pet::Scene::Home); break;
     default: break;
   }
@@ -463,6 +464,8 @@ bool loadSkin(App& app, int ship, const std::wstring& skin, std::wstring* err) {
     cfg.variants[i] = next->variants((Anim)i);
     if (next->fps() > 0) cfg.fps[i] = next->fps();  // chibi frames were rendered at one rate
   }
+  cfg.reactHead = next->variantIndex(Anim::React, L"react_head");
+  cfg.reactSpecial = next->variantIndex(Anim::React, L"react_special");
 
   if (ship != app.ship) {
     app.voices = pet::VoiceBank::parseTsv(readFile(app.shipsDir + L"\\" + app.ships[ship].key + L"\\voices.tsv"));

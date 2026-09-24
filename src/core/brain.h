@@ -10,15 +10,18 @@
 namespace pet {
 
 // Things the shell may want to react to (e.g. by showing a line).
-enum class PetEvent { None, TapBody, TapHead, Woke };
+enum class PetEvent { None, TapBody, TapHead, TapSpecial, Woke };
 
 struct BrainConfig {
   int walkSpeed = 40;                                    // px/s
   int sleepAfterSec = 180;                               // user idle time before sleeping
   int fps[(int)Anim::Count] = {2, 8, 8, 4, 8, 6, 1, 8};  // per Anim
   // Frame count of each variant, per Anim. Empty = the animation is not available
-  // (Blink / Land / React are then skipped). Variants of React: [0] body, [1] head pat.
+  // (Blink / Land / React are then skipped). Body taps play React variant 0.
   std::vector<int> variants[(int)Anim::Count];
+  int reactHead = 1;                                     // React variant for head pats
+  int reactSpecial = -1;                                 // "special touch" variant, -1: none
+  double specialChance = 0.25;                           // share of body taps that are special
   int spriteW = 96, spriteH = 144;                       // on-screen canvas size
   int groundInset = 0;                                   // px from canvas bottom up to the feet
   double headFraction = 0.22;                            // clicks in this top part of the canvas hit the head

@@ -73,6 +73,13 @@ std::vector<int> SpriteSet::variants(Anim a) const {
   return v;
 }
 
+int SpriteSet::variantIndex(Anim a, const std::string& name) const {
+  const auto& n = names_[(int)a];
+  for (size_t i = 0; i < n.size(); ++i)
+    if (n[i] == name) return (int)i;
+  return -1;
+}
+
 bool SpriteSet::load(const std::string& path, int height, bool exactHeight, double backingScale, std::string* err) {
   BOOL isDir = NO;
   [[NSFileManager defaultManager] fileExistsAtPath:@(path.c_str()) isDirectory:&isDir];
@@ -138,6 +145,7 @@ bool SpriteSet::loadAnimated(const std::string& dir, int height, bool exact, std
       if (files.empty()) continue;
       for (auto& f : files) f = dir + "/" + v + "/" + f;
       paths_[ai].push_back(files);
+      names_[ai].push_back(v);
     }
   }
   if (paths_[(int)Anim::Idle].empty()) {

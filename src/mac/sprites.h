@@ -51,6 +51,8 @@ public:
   int idleMinMs() const { return idleMinMs_; }
   int idleMaxMs() const { return idleMaxMs_; }
   std::vector<int> variants(pet::Anim a) const;
+  // Index of the variant loaded from folder `name` (e.g. "react_head"), -1 if none.
+  int variantIndex(pet::Anim a, const std::string& name) const;
 
   MacFrame get(pet::Anim a, int variant, int index);
   // (x, y) in canvas points, origin bottom-left.
@@ -90,6 +92,7 @@ private:
   int srcW_ = 0, srcH_ = 0;
   double s_ = 1;  // source px -> points
   std::vector<std::vector<std::string>> paths_[(int)pet::Anim::Count];
+  std::vector<std::string> names_[(int)pet::Anim::Count];  // folder of each variant
   std::map<std::tuple<int, int, int>, Cached> cache_;
   std::vector<unsigned char> scratch_;  // full-frame decode buffer
   // Animated frames are expanded into one of two canvas-sized IOSurfaces (alternating,

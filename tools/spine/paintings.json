@@ -3,5 +3,5 @@
   "beierfasite_g": {"skel": "assets/official/game/unpacked/spinepainting/beierfasite_g_res", "hide": ["^bj_\\d+$", "^bj_piaodai_", "^renyy_"]},
   "beierfasite_9": {"skel": "assets/official/game/unpacked/spinepainting/beierfasite_9_res", "hide": ["^bg_[abd]$"]},
   "xinnong": {"skel": "assets/official/game/unpacked/spinepainting/xinnong_res", "hide": []},
-  "nengdai_9": {"skel": "assets/official/game/unpacked/spinepainting/nengdai_9_res", "hide": ["^bj$", "^bj_bu", "^hb\\d", "^deng", "^shui", "^muban", "^mx\\d", "^Smoke", "^fwg", "^yan", "^tx_shizi"], "ground_patch": {"top": 0.55, "bottom": 0.78, "grow": 32, "feather": 12}}
+  "nengdai_9": {"skel": "assets/official/game/unpacked/spinepainting/nengdai_9_res", "hide": ["^bj$", "^bj_bu", "^hb\\d", "^deng", "^shui", "^mx\\d", "^Smoke", "^fwg", "^yan", "^tx_shizi", "^dashitou"]}
 }

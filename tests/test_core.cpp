@@ -158,7 +158,9 @@ TEST(brain_initial) {
 }
 
 TEST(brain_click_body_reacts_and_reports_tap) {
-  Brain b = makeBrain();
+  BrainConfig c = testCfg();
+  c.specialChance = 0;
+  Brain b = makeBrain(1, c);
   b.tick(0);
   b.press(110, 590);  // 38 px below the top of a 48 px canvas: body
   b.release();
@@ -192,9 +194,60 @@ TEST(brain_click_head_uses_head_variant) {
   CHECK_EQ(f.index, 4);
 }
 
+TEST(brain_special_touch_plays_its_variant) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::React] = {2, 3, 7};  // body, head pat, special touch
+  c.reactSpecial = 2;
+  c.specialChance = 1;
+  Brain b = makeBrain(1, c);
+  b.tick(0);
+  b.press(110, 590);  // body
+  b.release();
+  Frame f = b.tick(0);
+  CHECK(f.anim == Anim::React);
+  CHECK_EQ(f.variant, 2);
+  CHECK(f.event == PetEvent::TapSpecial);
+  b.tick(10000);
+  b.press(110, 555);  // head pats are never special
+  b.release();
+  f = b.tick(0);
+  CHECK_EQ(f.variant, 1);
+  CHECK(f.event == PetEvent::TapHead);
+}
+
+TEST(brain_special_touch_without_motion_keeps_body_variant) {
+  BrainConfig c = testCfg();
+  c.specialChance = 1;  // reactSpecial stays -1
+  Brain b = makeBrain(1, c);
+  b.tick(0);
+  b.press(110, 590);
+  b.release();
+  Frame f = b.tick(0);
+  CHECK(f.anim == Anim::React);
+  CHECK_EQ(f.variant, 0);
+  CHECK(f.event == PetEvent::TapSpecial);  // still picks the special-touch line
+}
+
+TEST(brain_special_touch_share) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::React] = {1, 1, 1};
+  c.reactSpecial = 2;
+  Brain b = makeBrain(7, c);
+  b.tick(0);
+  int special = 0;
+  for (int i = 0; i < 400; ++i) {
+    b.press(110, 590);
+    b.release();
+    special += b.tick(0).event == PetEvent::TapSpecial;
+    b.tick(5000);
+  }
+  CHECK(special > 60 && special < 140);  // about 25%
+}
+
 TEST(brain_click_without_react_frames_still_reports) {
   BrainConfig c = testCfg();
   c.variants[(int)Anim::React].clear();
+  c.specialChance = 0;
   Brain b = makeBrain(1, c);
   b.tick(0);
   b.press(110, 590);
@@ -475,9 +528,9 @@ TEST(voice_scene_keys) {
   CHECK(sceneKeys(Scene::Login, rng)[0] == "login");
   CHECK(sceneKeys(Scene::TapHead, rng)[0] == "headtouch");
   CHECK(sceneKeys(Scene::Home, rng)[0] == "home");
-  int special = 0;
-  for (int i = 0; i < 1000; ++i) special += sceneKeys(Scene::TapBody, rng)[0] == "touch2";
-  CHECK(special > 150 && special < 350);  // about 25%
+  CHECK(sceneKeys(Scene::TapBody, rng)[0] == "touch");
+  CHECK(sceneKeys(Scene::TapSpecial, rng)[0] == "touch2");
+  CHECK(sceneKeys(Scene::TapSpecial, rng)[1] == "touch");
 }
 
 TEST(voice_bubble_duration_counts_characters) {

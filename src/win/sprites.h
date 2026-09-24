@@ -48,6 +48,8 @@ public:
   int idleMinMs() const { return idleMinMs_; }  // 0: use the configured value
   int idleMaxMs() const { return idleMaxMs_; }
   std::vector<int> variants(pet::Anim a) const;
+  // Index of the variant loaded from folder `name` (e.g. L"react_head"), -1 if none.
+  int variantIndex(pet::Anim a, const std::wstring& name) const;
 
   SpriteFrame get(pet::Anim a, int variant, int index, bool mirrored);
 
@@ -71,6 +73,7 @@ private:
   // painting: frames_[anim][variant][index]; animated: paths_[anim][variant][index]
   std::vector<std::vector<SpriteFrame>> frames_[(int)pet::Anim::Count];
   std::vector<std::vector<std::wstring>> paths_[(int)pet::Anim::Count];
+  std::vector<std::wstring> names_[(int)pet::Anim::Count];  // folder of each variant
   std::map<std::tuple<int, int, int, bool>, SpriteFrame> cache_;  // animated idle/walk, decoded lazily
   SpriteFrame transient_;                                         // animated, any other state: one frame
   std::tuple<int, int, int, bool> transientKey_{-1, -1, -1, false};

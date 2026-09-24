@@ -29,10 +29,10 @@ Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测过占用�
 
 | 行为 | 说明 |
 |---|---|
-| 待机 | 立绘形象待在原地轻微呼吸；Q 版形象会随机走动，还会随机坐下、跳舞或做胜利动作 |
+| 待机 | 立绘形象待在原地轻微呼吸；Live2D 形象会随机播放游戏主界面的几段动作；Q 版形象会随机走动，还会随机坐下、跳舞或做胜利动作 |
 | 拖拽 | 左键按住拖动，Q 版会做出被提起来的动作 |
 | 下落 | 在半空松手会掉下来，Q 版落地后会晕一下 |
-| 点击 | 点身体说触摸台词，点头部说摸头台词，Q 版有对应的反应动作 |
+| 点击 | 点身体说触摸台词，点头部说摸头台词，Q 版、动态立绘和 Live2D 有对应的反应动作；点身体时约四分之一的几率触发「特殊触摸」，说特殊触摸台词，Live2D 形象还会播放游戏里的特殊触摸动作 |
 | 台词 | 官方台词，按当前皮肤挑选；启动时说登录台词，睡醒或长时间全屏后回来说回港台词 |
 | 自动说话 | 每隔一段时间说一句主界面台词，可在菜单里调间隔或关闭 |
 | 睡觉 | 3 分钟没有键鼠操作后睡觉 |
@@ -84,6 +84,7 @@ voices.tsv               官方台词：皮肤编号、场景、中文、日文
 | 动态立绘 | 游戏本体（`spinepainting/`），同上 | `tools/spine/export_paintings.py`，背景部件的隐藏规则在 `tools/spine/paintings.json` |
 | Live2D | 游戏本体（`live2d/`），同上 | `tools/live2d/`：还原成标准 Cubism 模型，再在本地网页里用官方 Cubism Core 渲染成帧 |
 | 立绘 | GitHub [Fernando2603/AzurLane](https://github.com/Fernando2603/AzurLane)（从国际服客户端解出的官方立绘） | `tools/fetch_paintings.py` |
+| 立绘（带整幅背景的皮肤） | 官方立绘把场景画死在图里的几套，改用动态立绘或 Live2D 去掉背景后的第一帧 | `export_paintings.py` 和 `finalize.py` 顺带写到 `assets/official/stills/` |
 | 台词文字 | B 站碧蓝航线 WIKI 的舰船台词表 | `tools/fetch_voice.py`（由构建脚本调用） |
 
 ### 生成步骤
@@ -107,8 +108,8 @@ python3 tools/build_ships.py
 
 两者都在生成素材时预先渲染成帧，桌宠程序本身不包含任何动画运行库。
 
-- **动态立绘**：同一套 Spine 渲染器，补充了 JSON 骨骼格式、路径约束和表情叠加。游戏里的动态立绘带整幅场景，`paintings.json` 里列出要隐藏的背景部件（天空、建筑、水面、烟雾、花瓣）。人物坐在场景上的画（能代温泉）保留她身下的一小块岩石和水面，边缘柔化。点击时播放游戏自带的表情。
-- **Live2D**：`tools/live2d/extract_l2d.py` 把游戏里的 Cubism-for-Unity 预制体还原成 `.moc3`、贴图、物理和动作文件，Unity 动画片段转换成 `motion3.json`。`render.html` 在本地网页里用 Live2D 官方的 Cubism Core 播放待机、摸身体、摸头、主界面动作，逐帧存成图片。`hide_parts.json` 指定要隐藏的背景部件。
+- **动态立绘**：同一套 Spine 渲染器，补充了 JSON 骨骼格式、路径约束和表情叠加。游戏里的动态立绘带整幅场景，`paintings.json` 里列出要隐藏的背景部件（天空、建筑、水面、岩石、烟雾、花瓣），人物身边的小道具（木桶、托盘、小啾）保留。点击时播放游戏自带的表情。
+- **Live2D**：`tools/live2d/extract_l2d.py` 把游戏里的 Cubism-for-Unity 预制体还原成 `.moc3`、贴图、物理和动作文件，Unity 动画片段转换成 `motion3.json`。`jobs.py` 生成渲染任务，`render.html` 在本地网页里用 Live2D 官方的 Cubism Core 播放待机、主界面、摸身体、摸头、特殊触摸动作，逐帧存成图片，`finalize.py` 统一裁剪、缩放、压缩。`models.json` 按模型指定要隐藏的背景部件、不用的动作（镜头特写、全屏特效）和不参与裁剪框的动作。
 
 Cubism Core 是 Live2D 的专有软件，使用前需同意它的许可协议（年收入 1000 万日元以下的个人免费），而且不能再分发。它只在生成素材时使用，放在 `tools/live2d/vendor/`，不进 git。
 
@@ -162,6 +163,7 @@ clang++ -std=c++17 -I src tests/test_core.cpp src/core/*.cpp -o build/test_core 
 - 只显示台词文字，不播放语音。
 - 部分皮肤在游戏里有更华丽的待机动作（荡秋千、魔术柜等），因为画面太大，桌宠里换成了普通待机。
 - 只做了模拟器里下载到的动态立绘和 Live2D。游戏里其他 Live2D 皮肤需要先在游戏里打开一次才会下载。
+- 部分 Live2D 皮肤在游戏里还有拖动特定部位触发的互动（例如柴郡的绚烂夜梦、童话书迷宫）。桌宠里拖动用来移动位置，这些互动没有做。
 - 信浓的动态立绘在游戏里没有表情动画，点击时只说台词。
 - Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测试过。
 - macOS 和 Windows 版都没有签名。

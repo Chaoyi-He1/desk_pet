@@ -1,0 +1,10 @@
+{
+ "_doc": "Per model: hide = Live2D parts to hide (background, stage props); hide_meshes = single art meshes to hide (a prop drawn into a part that also holds her body); skip = game motions not to render (camera zooms, full-screen effects); clip = states that do not widen the crop box (stray effects are cut off at its edge).",
+ "beierfasite_2": {"hide": []},
+ "chaijun_3": {"hide": ["Part163"], "clip": ["blink_main2"]},
+ "chaijun_4": {"hide": ["Part15"]},
+ "chaijun_5": {"hide": ["Part50"], "skip": ["main_2", "main_3"]},
+ "chaijun_6": {"hide": ["BG", "Part25"], "skip": ["touch_body", "main_2", "main_3"]},
+ "nengdai_2": {"hide": ["Part25"]},
+ "nengdai_3": {"hide": ["Part16", "Part23", "Part86"], "hide_meshes": ["ArtMesh146"]}
+}

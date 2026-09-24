@@ -4,8 +4,11 @@ into a pet skin folder under assets/official/l2d_skins/<model>/.
 
   python3 tools/live2d/finalize.py [MODEL ...]
 
-All frames share one crop (the union of visible pixels) and are scaled so that it is
-PICTURE_PX tall, then quantised with pngquant. meta.ini marks the skin as a stationary
+All frames share one crop (the union of visible pixels, leaving out the states listed
+under "clip" in models.json) and are scaled so that it is PICTURE_PX tall, then quantised
+with pngquant. States whose motion is under "skip" are left out. The first idle frame,
+at capture resolution, is also saved as assets/official/stills/<model>.png: a
+background-free static painting for skins whose official picture has scenery baked in. meta.ini marks the skin as a stationary
 painting (kind=painting, walk=0, size_ratio=1: the pet size is the picture height) and
 spaces out the long main-screen motions (idle_min_ms / idle_max_ms).
 """
@@ -17,28 +20,36 @@ import sys
 import numpy as np
 from PIL import Image
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from jobs import STATES, config  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RAW = os.path.join(ROOT, "assets", "official", "l2dframes")
 OUT = os.path.join(ROOT, "assets", "official", "l2d_skins")
+STILLS = os.path.join(ROOT, "assets", "official", "stills")
 PICTURE_PX = 720
 FPS = 8
 
 
-def frames(model):
+def frames(model, skip=()):
     d = os.path.join(RAW, model)
+    motion = dict(STATES)
     out = {}
     for state in sorted(os.listdir(d)):
         p = os.path.join(d, state)
-        if os.path.isdir(p) and state != "census":
+        if os.path.isdir(p) and state != "census" and motion.get(state) not in skip:
             out[state] = [os.path.join(p, f) for f in sorted(os.listdir(p)) if f.endswith(".png")]
     return out
 
 
 def finalize(model):
-    fr = frames(model)
+    cfg = config().get(model, {})
+    fr = frames(model, cfg.get("skip", []))
     x0 = y0 = 10 ** 9
     x1 = y1 = -1
     for state, fs in fr.items():
+        if state in cfg.get("clip", []):
+            continue
         for f in fs[::2]:
             bb = Image.open(f).getchannel("A").point(lambda v: 255 if v > 6 else 0).getbbox()
             if bb:
@@ -61,6 +72,10 @@ def finalize(model):
                     head_top = rows.min() if head_top is None else min(head_top, rows.min())
                     bottom = rows.max() if bottom is None else max(bottom, rows.max())
             im.save(os.path.join(dst, state, f"{i:03d}.png"))
+    still = Image.open(fr["idle"][0]).convert("RGBA")
+    bb = still.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+    os.makedirs(STILLS, exist_ok=True)
+    (still.crop(bb) if bb else still).save(os.path.join(STILLS, model + ".png"), optimize=True)
     pq = shutil.which("pngquant")
     if pq:
         files = [os.path.join(dp, f) for dp, _, fs in os.walk(dst) for f in fs if f.endswith(".png")]

@@ -452,6 +452,8 @@ struct Ship {
     cfg.variants[i] = next->variants((Anim)i);
     if (next->fps() > 0) cfg.fps[i] = next->fps();  // chibi frames were rendered at one rate
   }
+  cfg.reactHead = next->variantIndex(Anim::React, "react_head");
+  cfg.reactSpecial = next->variantIndex(Anim::React, "react_special");
   if (ship != ship_) voices_ = pet::VoiceBank::parseTsv(readFile(shipsDir_ + "/" + ships_[ship].key + "/voices.tsv"));
   brain_.reset(new pet::Brain(cfg, (unsigned)rng_()));
   sprites_ = std::move(next);
@@ -640,6 +642,7 @@ struct Ship {
   switch (f.event) {
     case pet::PetEvent::TapBody: [self say:pet::Scene::TapBody]; break;
     case pet::PetEvent::TapHead: [self say:pet::Scene::TapHead]; break;
+    case pet::PetEvent::TapSpecial: [self say:pet::Scene::TapSpecial]; break;
     case pet::PetEvent::Woke: [self say:pet::Scene::Home]; break;
     default: break;
   }

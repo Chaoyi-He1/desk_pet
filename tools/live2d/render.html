@@ -25,12 +25,17 @@ async function renderJob(app, job) {
   // (pixi-live2d-display 0.4 has no beforeModelUpdate event, so wrap coreModel.update.)
   let hidden = new Set((job.hideParts || []).map((id) => partIds.indexOf(id)).filter((i) => i >= 0));
   let lastHidden = new Set();
+  // Single art meshes to hide (a prop drawn straight into a part that also holds her arm):
+  // their computed opacity is zeroed after every core update, before drawing.
+  const drawIds = Array.from(core.drawables.ids), drawParents = Array.from(core.drawables.parentPartIndices);
+  let hiddenDraw = new Set((job.hideDrawables || []).map((id) => drawIds.indexOf(id)).filter((i) => i >= 0));
   const coreUpdate = cm.update.bind(cm);
   cm.update = () => {
     for (const i of lastHidden) if (!hidden.has(i)) cm.setPartOpacityByIndex(i, baseOpacity[i]);
     for (const i of hidden) cm.setPartOpacityByIndex(i, 0);
     lastHidden = new Set(hidden);
     coreUpdate();
+    for (const i of hiddenDraw) core.drawables.opacities[i] = 0;
   };
   const w = model.width, h = model.height;
   const k = Math.min((SIZE * 0.96) / w, (SIZE * 0.96) / h);
@@ -40,7 +45,7 @@ async function renderJob(app, job) {
   app.stage.removeChildren();
   app.stage.addChild(model);
   const dt = 1000 / job.fps;
-  const step = () => { model.update(dt); app.renderer.render(app.stage); };
+  const step = (ms = dt) => { model.update(ms); app.renderer.render(app.stage); };
   const save = async (file) => {
     const blob = await new Promise((r) => app.view.toBlob(r, 'image/png'));
     await fetch('/save?file=' + encodeURIComponent(file), {method: 'POST', body: blob});
@@ -50,18 +55,36 @@ async function renderJob(app, job) {
   };
   if (job.census) {
     // One frame per top-level part (everything else hidden), to decide what is background.
-    await play(job.idle.motion);
-    for (let i = 0; i < 8; i++) step();
-    const tops = partIds.map((id, i) => i).filter((i) => partParents[i] < 0);
+    // censusMotion / censusAt (seconds) pick the moment, e.g. when a prop flies in.
+    await play(job.censusMotion || job.idle.motion);
+    for (let i = 0; i < Math.max(8, Math.round((job.censusAt || 0) * job.fps)); i++) step();
+    // censusParent: list that part's children instead of the top-level parts.
+    const parent = job.censusParent ? partIds.indexOf(job.censusParent) : -1;
+    const tops = job.censusDrawables ? [] : partIds.map((id, i) => i).filter((i) => partParents[i] === parent);
+    const under = (i, a) => { for (let p = i; p >= 0; p = partParents[p]) if (p === a) return true; return false; };
     for (const t of tops) {
-      hidden = new Set(tops.filter((x) => x !== t));
-      step();
+      // show t, its sub-parts and its ancestors (hiding an ancestor would hide t); hide the rest
+      hidden = new Set(partIds.map((id, i) => i).filter((i) => !under(i, t) && !under(t, i)));
+      for (const id of job.hideParts || []) if (partIds.indexOf(id) >= 0) hidden.add(partIds.indexOf(id));
+      step(0.001);  // (almost) no time passes: every part is captured at the same moment
       await save(`${job.out}/census/${partIds[t]}.png`);
     }
-    hidden = new Set();
-    step();
+    if (job.censusDrawables) {
+      // one frame per art mesh drawn straight into that part (its sub-parts hidden)
+      const p = partIds.indexOf(job.censusDrawables);
+      const mine = drawIds.map((id, i) => i).filter((i) => drawParents[i] === p);
+      hidden = new Set(partIds.map((id, i) => i).filter((i) => !under(p, i)));
+      for (const d of mine) {
+        hiddenDraw = new Set(drawIds.map((id, i) => i).filter((i) => i !== d));
+        step(0.001);
+        await save(`${job.out}/census/${drawIds[d]}.png`);
+      }
+      hiddenDraw = new Set();
+    }
+    hidden = new Set((job.hideParts || []).map((id) => partIds.indexOf(id)).filter((i) => i >= 0));
+    step(0.001);
     await save(`${job.out}/census/_all.png`);
-    status(`${job.out} census ${tops.length} top-level parts`);
+    status(`${job.out} census ${tops.length} parts`);
     model.destroy();
     return;
   }

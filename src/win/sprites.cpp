@@ -89,6 +89,13 @@ HBITMAP SpriteSet::newDib(int w, int h, void** bits) {
   return CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, bits, nullptr, 0);
 }
 
+int SpriteSet::variantIndex(Anim a, const std::wstring& name) const {
+  const auto& n = names_[(int)a];
+  for (size_t i = 0; i < n.size(); ++i)
+    if (n[i] == name) return (int)i;
+  return -1;
+}
+
 std::vector<int> SpriteSet::variants(Anim a) const {
   std::vector<int> v;
   if (animated_) {
@@ -232,6 +239,7 @@ bool SpriteSet::loadAnimated(const std::wstring& dir, int height, bool exact, st
       if (files.empty()) continue;
       for (auto& f : files) f = dir + L"\\" + vf + L"\\" + f;
       paths_[ai].push_back(files);
+      names_[ai].push_back(vf);
     }
   }
   if (paths_[(int)Anim::Idle].empty()) {

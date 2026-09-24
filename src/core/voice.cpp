@@ -36,12 +36,9 @@ std::vector<std::string> sceneKeys(Scene s, std::mt19937& rng) {
       if (u(rng) < 0.2) return {"detail", "main"};
       return {"main", "detail"};
     }
+    case Scene::TapSpecial: return {"touch2", "touch"};
     case Scene::TapBody:
-    default: {
-      std::uniform_real_distribution<double> u(0, 1);
-      if (u(rng) < 0.25) return {"touch2", "touch"};
-      return {"touch", "touch2"};
-    }
+    default: return {"touch", "touch2"};
   }
 }
 
