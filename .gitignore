@@ -11,3 +11,5 @@ assets/official/
 assets/ships/
 assets/skins/
 assets/voice/
+# Live2D Cubism Core is proprietary (not redistributable); fetched by tools/live2d/fetch_vendor.sh
+tools/live2d/vendor/

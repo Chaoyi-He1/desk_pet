@@ -78,6 +78,16 @@ inline std::string skinDisplayName(const std::string& fileName) {
   return out.empty() ? stem : out;
 }
 
+// Outfit name without the kind prefix: "Q版 改造" / "L2D 彩云之玫瑰" / "动态 改造" -> "改造".
+inline std::string skinOutfitName(const std::string& fileName) {
+  std::string n = skinDisplayName(fileName);
+  for (const char* p : {"Q版 ", "L2D ", "动态 "}) {
+    std::string pre = p;
+    if (n.compare(0, pre.size(), pre) == 0) return n.substr(pre.size());
+  }
+  return n;
+}
+
 // First all-digit '-'-separated token of a skin file or folder name, e.g.
 // "01-改造.png" -> "01", "Q版-07-泳装" -> "07". Empty when there is none.
 inline std::string skinNumber(const std::string& fileName) {

@@ -1,10 +1,15 @@
 #include "minitest.h"
+#include <algorithm>
 #include "core/ini.h"
 #include "core/screen.h"
 #include "core/pose.h"
 #include "core/brain.h"
 #include "core/skin.h"
 #include "core/voice.h"
+#include "core/chat.h"
+#include "core/frames.h"
+#include <chrono>
+#include <cstring>
 
 using namespace pet;
 
@@ -445,6 +450,18 @@ TEST(voice_avoids_immediate_repeat) {
   }
 }
 
+TEST(voice_samples_prefer_skin_and_are_distinct) {
+  VoiceBank vb = VoiceBank::parseTsv(kTsv);
+  std::mt19937 rng(2);
+  std::vector<std::string> s = vb.samples("01", "02", 3, false, rng);
+  CHECK_EQ(s.size(), (size_t)3);
+  CHECK(std::find(s.begin(), s.end(), "主界面一") != s.end());
+  CHECK(std::find(s.begin(), s.end(), "誓约的欢迎") == s.end());
+  std::vector<std::string> all = vb.samples("01", "02", 50, true, rng);
+  CHECK(std::find(all.begin(), all.end(), "誓约的欢迎") != all.end());
+  CHECK(std::find(all.begin(), all.end(), "摸头") == all.end());  // headtouch is not an everyday scene
+}
+
 TEST(voice_plain_lines_match_any_scene) {
   VoiceBank vb = VoiceBank::parsePlain("# comment\n  第一句  \n\n第二句\n");
   CHECK_EQ(vb.size(), (size_t)2);
@@ -473,11 +490,171 @@ TEST(voice_bubble_duration_counts_characters) {
   CHECK_EQ(bubbleDurationMs(std::string(500, 'a'), 3000), 10000);
 }
 
+TEST(skin_outfit_name_strips_kind) {
+  CHECK(skinOutfitName("L2D-03-彩云之玫瑰") == "彩云之玫瑰");
+  CHECK(skinOutfitName("动态-01-改造") == "改造");
+  CHECK(skinOutfitName("Q版-02-默认女仆装") == "默认女仆装");
+  CHECK(skinOutfitName("05-优雅而高贵的从者.png") == "优雅而高贵的从者");
+}
+
 TEST(skin_number_from_names) {
   CHECK(skinNumber("01-改造.png") == "01");
   CHECK(skinNumber("Q版-07-White Seaside Melody") == "07");
   CHECK(skinNumber("belfast.png") == "");
   CHECK(skinNumber("12") == "12");
+}
+
+// ---------- chat ----------
+TEST(chat_config_and_endpoint) {
+  ChatConfig c = ChatConfig::parse("[chat]\nbase_url=https://api.deepseek.com/v1/\napi_key=sk-x\nmodel=deepseek-chat\nmax_turns=3\n");
+  CHECK(c.ready());
+  CHECK(c.endpoint() == "https://api.deepseek.com/v1/chat/completions");
+  CHECK(c.model == "deepseek-chat");
+  CHECK_EQ(c.maxTurns, 3);
+  CHECK(!ChatConfig::parse("[chat]\napi_key=\n").ready());
+  CHECK(!ChatConfig::parse(chatIniTemplate()).ready());  // template ships without a key
+}
+
+TEST(chat_json_quote) {
+  CHECK(jsonQuote("a\"b\\c\n") == "\"a\\\"b\\\\c\\n\"");
+  CHECK(jsonQuote("指挥官") == "\"指挥官\"");
+  CHECK(jsonQuote(std::string(1, '\x01')) == "\"\\u0001\"");
+}
+
+TEST(chat_request_body_keeps_bounded_history) {
+  ChatConfig c;
+  c.model = "m";
+  ChatSession s;
+  s.reset("你是贝尔法斯特");
+  std::string b = s.requestBody(c, "你好");
+  CHECK(b.find("\"model\":\"m\"") != std::string::npos);
+  CHECK(b.find("{\"role\":\"system\",\"content\":\"你是贝尔法斯特\"}") != std::string::npos);
+  CHECK(b.find("{\"role\":\"user\",\"content\":\"你好\"}]}") != std::string::npos);
+  for (int i = 0; i < 5; ++i) s.accept("q" + std::to_string(i), "a" + std::to_string(i), 2);
+  CHECK_EQ(s.turns(), (size_t)2);
+  b = s.requestBody(c, "next");
+  CHECK(b.find("\"q2\"") == std::string::npos);
+  CHECK(b.find("\"q3\"") != std::string::npos && b.find("\"a4\"") != std::string::npos);
+  CHECK(b.find("\"q3\"") < b.find("\"a3\"") && b.find("\"a3\"") < b.find("\"q4\""));
+}
+
+TEST(chat_parse_reply) {
+  std::string r, e;
+  const char* ok = "{\"id\":\"x\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,"
+                   "\"message\":{\"role\":\"assistant\",\"content\":\"\\u6307\\u6325\\u5b98\\uff0c\\n红茶\\\"好\\\"了 \\ud83d\\ude0a\"},"
+                   "\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":5}}";
+  CHECK(parseChatReply(ok, &r, &e));
+  CHECK(r == "指挥官，\n红茶\"好\"了 \xF0\x9F\x98\x8A");
+  CHECK(!parseChatReply("{\"error\":{\"message\":\"Invalid API key\",\"type\":\"auth\"}}", &r, &e));
+  CHECK(e == "Invalid API key");
+  CHECK(!parseChatReply("", &r, &e));
+  CHECK(!parseChatReply("<html>502</html>", &r, &e));
+}
+
+TEST(chat_clip_and_prompt) {
+  CHECK(clipReply("  你好  \n", 10) == "你好");
+  CHECK(clipReply("一二三四五", 3) == "一二三…");
+  CHECK(clipReply("一二三", 3) == "一二三");
+  std::string p = chatSystemPrompt("贝尔法斯特", "改造", {"欢迎回来"}, 60);
+  CHECK(p.find("贝尔法斯特") != std::string::npos && p.find("改造") != std::string::npos);
+  CHECK(p.find("60") != std::string::npos && p.find("- 欢迎回来") != std::string::npos);
+}
+
+// ---------- frames ----------
+static const unsigned char kLz4In[] = {59,97,98,99,3,0,255,29,88,89,90,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,7,1,0,255,23,80,7,7,101,110,100};
+
+static std::string lz4Expected() {
+  std::string s = "abcabcabcabcabcabcXYZ";
+  for (int i = 0; i < 40; ++i) s += (char)i;
+  s += std::string(300, (char)7);
+  return s + "end";
+}
+
+TEST(frames_lz4_roundtrip_from_python_encoder) {
+  std::string want = lz4Expected();
+  std::vector<uint8_t> out(want.size());
+  long n = lz4Decompress(kLz4In, sizeof kLz4In, out.data(), out.size());
+  CHECK_EQ(n, (long)want.size());
+  CHECK(std::memcmp(out.data(), want.data(), want.size()) == 0);
+  // too small an output buffer and truncated input are rejected, not overrun
+  std::vector<uint8_t> small(want.size() - 1);
+  CHECK_EQ(lz4Decompress(kLz4In, sizeof kLz4In, small.data(), small.size()), -1L);
+  CHECK(lz4Decompress(kLz4In, 20, out.data(), out.size()) != (long)want.size());
+}
+
+static std::vector<uint8_t> makeBpf(int W, int H, int x0, int y0, int w, int h, const std::vector<uint32_t>& pal,
+                                    const std::vector<uint8_t>& idx) {
+  // literal-only LZ4 block: token 0xF0 + length bytes, then the data
+  std::vector<uint8_t> lz;
+  size_t n = idx.size();
+  if (n >= 15) {
+    lz.push_back(0xF0);
+    size_t r = n - 15;
+    while (r >= 255) { lz.push_back(255); r -= 255; }
+    lz.push_back((uint8_t)r);
+  } else {
+    lz.push_back((uint8_t)(n << 4));
+  }
+  lz.insert(lz.end(), idx.begin(), idx.end());
+  std::vector<uint8_t> b = {'B', 'P', 'F', '1'};
+  auto u16 = [&](unsigned v) { b.push_back(v & 255); b.push_back(v >> 8); };
+  auto u32 = [&](uint32_t v) { for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 255); };
+  u16(W); u16(H); u16(x0); u16(y0); u16(w); u16(h); u16((unsigned)pal.size());
+  for (uint32_t c : pal) u32(c);
+  u32((uint32_t)lz.size());
+  b.insert(b.end(), lz.begin(), lz.end());
+  return b;
+}
+
+TEST(frames_bpf_parse_and_expand) {
+  std::vector<uint32_t> pal = {0x00000000u, 0xFF0000FFu, 0x80404000u};
+  std::vector<uint8_t> idx = {1, 2, 0, 2, 1, 1};  // 3x2 box
+  std::vector<uint8_t> file = makeBpf(5, 4, 1, 1, 3, 2, pal, idx);
+  BpfFrame f;
+  std::string err;
+  CHECK(parseBpf(file.data(), file.size(), &f, &err));
+  CHECK_EQ(f.width, 5);
+  CHECK_EQ(f.w, 3);
+  std::vector<uint32_t> canvas(5 * 4, 0xDEADBEEFu);
+  expandBpf(f, (uint8_t*)canvas.data(), 5 * 4);
+  CHECK_EQ(canvas[0], 0u);                // cleared outside the box
+  CHECK_EQ(canvas[1 * 5 + 1], 0xFF0000FFu);
+  CHECK_EQ(canvas[1 * 5 + 2], 0x80404000u);
+  CHECK_EQ(canvas[2 * 5 + 3], 0xFF0000FFu);
+  CHECK_EQ(canvas[3 * 5 + 4], 0u);
+  // corrupt inputs
+  std::vector<uint8_t> bad = file;
+  bad[0] = 'X';
+  CHECK(!parseBpf(bad.data(), bad.size(), &f, &err));
+  bad = file;
+  bad[bad.size() - 1] = 9;  // index 9 is outside the 3-colour palette
+  CHECK(!parseBpf(bad.data(), bad.size(), &f, &err));
+  CHECK(!parseBpf(file.data(), file.size() - 3, &f, &err));
+}
+
+TEST(frames_downscale_averages_areas) {
+  // 4x2 -> 2x1: each output pixel averages a 2x2 block per channel
+  std::vector<uint32_t> src = {0x00000000u, 0x40404040u, 0xFFFFFFFFu, 0xFFFFFFFFu,
+                               0x80808080u, 0xC0C0C0C0u, 0x00000000u, 0x00000000u};
+  uint32_t dst[2];
+  downscaleBGRA(src.data(), 4, 2, 4, dst, 2, 1, 2);
+  CHECK_EQ(dst[0], 0x60606060u);  // (0+64+128+192)/4 = 96
+  CHECK_EQ(dst[1], 0x80808080u);  // (255+255+0+0)/4 = 127.5 -> 128
+  // 3 -> 2 uses fractional weights: [a, a/2+b/2... ] check constant image stays constant
+  std::vector<uint32_t> flat(9 * 7, 0x7F3F1F0Fu);
+  std::vector<uint32_t> out(4 * 3);
+  downscaleBGRA(flat.data(), 9, 7, 9, out.data(), 4, 3, 4);
+  for (uint32_t v : out) CHECK_EQ(v, 0x7F3F1F0Fu);
+}
+
+TEST(frames_downscale_speed_is_reasonable) {
+  const int sw = 969, sh = 731, dw = 424, dh = 320;
+  std::vector<uint32_t> src((size_t)sw * sh, 0x80402010u), dst((size_t)dw * dh);
+  auto t0 = std::chrono::steady_clock::now();
+  for (int i = 0; i < 5; ++i) downscaleBGRA(src.data(), sw, sh, sw, dst.data(), dw, dh, dw);
+  double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 5;
+  std::printf("  downscale 969x731 -> 424x320: %.2f ms\n", ms);
+  CHECK(ms < 40);  // generous: -O0 debug builds of the tests are slow
 }
 
 MINITEST_MAIN

@@ -8,9 +8,11 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <unordered_map>
 #include <sstream>
 
+#include "core/frames.h"
 #include "core/ini.h"
 #include "core/skin.h"
 
@@ -27,7 +29,10 @@ std::vector<std::string> listDir(const std::string& dir, bool wantDirs, const ch
     BOOL isDir = NO;
     [fm fileExistsAtPath:[@(dir.c_str()) stringByAppendingPathComponent:n] isDirectory:&isDir];
     if ((bool)isDir != wantDirs) continue;
-    if (ext && ![[n.pathExtension lowercaseString] isEqualToString:@(ext)]) continue;
+    if (ext) {  // "png" also accepts the fast .bpf frames
+      NSString* e = [n.pathExtension lowercaseString];
+      if (![e isEqualToString:@(ext)] && !(strcmp(ext, "png") == 0 && [e isEqualToString:@"bpf"])) continue;
+    }
     out.push_back(n.precomposedStringWithCanonicalMapping.UTF8String);
   }
   std::sort(out.begin(), out.end());
@@ -140,7 +145,13 @@ bool SpriteSet::loadAnimated(const std::string& dir, int height, bool exact, std
     return false;
   }
   int size = exact ? pet::clampHeight(height) : height;
-  s_ = std::min(2.0, 0.8 * size / charH);
+  s_ = std::min(2.0, meta.getDouble("sequence", "size_ratio", 0.8) * size / charH);
+  walks_ = meta.getInt("sequence", "walk", 1) != 0;
+  // Painting-sized frames (dynamic paintings, Live2D) would need 50-200 MB cached; decode
+  // each one when shown instead (a palette PNG decodes in a few ms at 8 fps).
+  stream_ = meta.get("sequence", "kind", "") == "painting";
+  idleMinMs_ = meta.getInt("sequence", "idle_min_ms", 0);
+  idleMaxMs_ = meta.getInt("sequence", "idle_max_ms", 0);
   size_ = size;
   cw_ = std::max(1, (int)std::lround(srcW_ * s_));
   ch_ = std::max(1, (int)std::lround(srcH_ * s_));
@@ -151,10 +162,27 @@ bool SpriteSet::loadAnimated(const std::string& dir, int height, bool exact, std
   return true;
 }
 
+static bool readBpf(const std::string& path, pet::BpfFrame* f) {
+  std::ifstream in(path, std::ios::binary);
+  std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  return !data.empty() && pet::parseBpf(data.data(), data.size(), f);
+}
+
+static bool isBpf(const std::string& p) { return p.size() > 4 && p.compare(p.size() - 4, 4, ".bpf") == 0; }
+
 const SpriteSet::Cached* SpriteSet::decode(int a, int v, int i) {
   auto key = std::make_tuple(a, v, i);
   auto it = cache_.find(key);
   if (it != cache_.end()) return &it->second;
+  if (isBpf(paths_[a][v][i])) {  // already palette + indices: no pixel work at all
+    pet::BpfFrame f;
+    if (!readBpf(paths_[a][v][i], &f) || f.width != srcW_ || f.height != srcH_) return nullptr;
+    Cached c;
+    c.x0 = f.x0; c.y0 = f.y0; c.w = f.w; c.h = f.h;
+    c.index = std::move(f.index);
+    c.palette = std::move(f.palette);
+    return &cache_.emplace(key, std::move(c)).first->second;
+  }
   CGImageRef img = decodeFile(paths_[a][v][i]);
   if (!img) return nullptr;
   const int w = (int)CGImageGetWidth(img), h = (int)CGImageGetHeight(img);
@@ -212,6 +240,93 @@ const SpriteSet::Cached* SpriteSet::decode(int a, int v, int i) {
   return &cache_.emplace(key, std::move(c)).first->second;
 }
 
+void SpriteSet::ensureSurfaces() {
+  if (surf_[0]) return;
+  NSDictionary* props = @{
+    (id)kIOSurfaceWidth : @(srcW_), (id)kIOSurfaceHeight : @(srcH_), (id)kIOSurfaceBytesPerElement : @4,
+    (id)kIOSurfacePixelFormat : @((uint32_t)'BGRA')
+  };
+  for (IOSurfaceRef& sf : surf_) sf = IOSurfaceCreate((__bridge CFDictionaryRef)props);
+}
+
+// Fast path for our frames: 8-bit RGBA (ImageIO expands palette PNGs to it). Copies the
+// decoded pixels straight into a premultiplied BGRA buffer, skipping Core Graphics'
+// colour matching and blending, which cost ~5x the PNG decode itself.
+bool SpriteSet::copyPixels(CGImageRef img, unsigned char* dst, size_t dstStride) {
+  const size_t w = CGImageGetWidth(img), h = CGImageGetHeight(img);
+  if ((int)w != srcW_ || (int)h != srcH_ || CGImageGetBitsPerComponent(img) != 8 || CGImageGetBitsPerPixel(img) != 32)
+    return false;
+  CGImageAlphaInfo ai = CGImageGetAlphaInfo(img);
+  CGBitmapInfo order = CGImageGetBitmapInfo(img) & kCGBitmapByteOrderMask;
+  bool premul = ai == kCGImageAlphaPremultipliedLast;
+  if ((ai != kCGImageAlphaLast && !premul) || (order != kCGBitmapByteOrderDefault && order != kCGBitmapByteOrder32Big))
+    return false;
+  CGColorSpaceModel model = CGColorSpaceGetModel(CGImageGetColorSpace(img));
+  if (model != kCGColorSpaceModelRGB) return false;
+  CFDataRef data = CGDataProviderCopyData(CGImageGetDataProvider(img));
+  if (!data) return false;
+  const unsigned char* src = CFDataGetBytePtr(data);
+  const size_t srcStride = CGImageGetBytesPerRow(img);
+  for (size_t y = 0; y < h; ++y) {
+    const unsigned char* s = src + y * srcStride;  // R G B A
+    unsigned char* d = dst + y * dstStride;         // B G R A (little-endian ARGB)
+    for (size_t x = 0; x < w; ++x, s += 4, d += 4) {
+      unsigned a = s[3];
+      if (a == 0) continue;  // buffer was cleared
+      if (premul || a == 255) {
+        d[0] = s[2]; d[1] = s[1]; d[2] = s[0];
+      } else {
+        d[0] = (unsigned char)((s[2] * a + 127) / 255);
+        d[1] = (unsigned char)((s[1] * a + 127) / 255);
+        d[2] = (unsigned char)((s[0] * a + 127) / 255);
+      }
+      d[3] = (unsigned char)a;
+    }
+  }
+  CFRelease(data);
+  return true;
+}
+
+void SpriteSet::blitFile(const std::string& png) {
+  ensureSurfaces();
+  if (isBpf(png)) {
+    pet::BpfFrame f;
+    bool ok = readBpf(png, &f) && f.width == srcW_ && f.height == srcH_;
+    surfIdx_ ^= 1;
+    IOSurfaceRef sf = surf_[surfIdx_];
+    IOSurfaceLock(sf, 0, nullptr);
+    uint8_t* base = (uint8_t*)IOSurfaceGetBaseAddress(sf);
+    size_t stride = IOSurfaceGetBytesPerRow(sf);
+    if (ok) pet::expandBpf(f, base, stride);
+    else std::memset(base, 0, stride * (size_t)srcH_);
+    IOSurfaceUnlock(sf, 0, nullptr);
+    used_[surfIdx_] = CGRectMake(0, 0, srcW_, srcH_);
+    return;
+  }
+  CGImageRef img = decodeFile(png);
+  surfIdx_ ^= 1;
+  IOSurfaceRef sf = surf_[surfIdx_];
+  IOSurfaceLock(sf, 0, nullptr);
+  void* base = IOSurfaceGetBaseAddress(sf);
+  size_t stride = IOSurfaceGetBytesPerRow(sf);
+  std::memset(base, 0, stride * (size_t)srcH_);
+  if (img && copyPixels(img, (unsigned char*)base, stride)) {
+    CGImageRelease(img);
+    img = nullptr;
+  }
+  if (img) {  // unusual pixel format: let Core Graphics convert it
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(base, srcW_, srcH_, 8, stride, cs,
+                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, srcW_, srcH_), img);
+    CGContextRelease(ctx);
+    CGColorSpaceRelease(cs);
+    CGImageRelease(img);
+  }
+  IOSurfaceUnlock(sf, 0, nullptr);
+  used_[surfIdx_] = CGRectMake(0, 0, srcW_, srcH_);  // whole surface was rewritten
+}
+
 MacFrame SpriteSet::get(Anim a, int variant, int index) {
   MacFrame f;
   if (!animated_) {
@@ -220,26 +335,24 @@ MacFrame SpriteSet::get(Anim a, int variant, int index) {
     return f;
   }
   int ai = paths_[(int)a].empty() ? (int)Anim::Idle : (int)a;
-  if (ai != lastAnim_) {  // keep idle and walk (most of the time) and the current state
-    for (auto it = cache_.begin(); it != cache_.end();) {
-      int k = std::get<0>(it->first);
-      if (k != (int)Anim::Idle && k != (int)Anim::Walk && k != ai) it = cache_.erase(it);
-      else ++it;
-    }
-    lastAnim_ = ai;
-  }
   int v = (int)((size_t)variant % paths_[ai].size());
   int i = (int)((size_t)index % paths_[ai][v].size());
+  if (stream_ || (ai != (int)Anim::Idle && ai != (int)Anim::Walk)) {
+    // Reactions, random actions, sleep...: decoded frame by frame straight into the
+    // display surface and not kept, so memory only holds the idle and walk loops.
+    auto key = std::make_tuple(ai, v, i);
+    if (key != currentKey_) {
+      blitFile(paths_[ai][v][i]);
+      currentKey_ = key;
+    }
+    f.surface = surf_[surfIdx_];
+    return f;
+  }
   const Cached* c = decode(ai, v, i);
   if (!c) return f;
   auto key = std::make_tuple(ai, v, i);
-  if (!surf_[0]) {
-    NSDictionary* props = @{
-      (id)kIOSurfaceWidth : @(srcW_), (id)kIOSurfaceHeight : @(srcH_), (id)kIOSurfaceBytesPerElement : @4,
-      (id)kIOSurfacePixelFormat : @((uint32_t)'BGRA')
-    };
-    for (IOSurfaceRef& sf : surf_) sf = IOSurfaceCreate((__bridge CFDictionaryRef)props);
-  }
+  ensureSurfaces();
+
   if (key != currentKey_) {
     surfIdx_ ^= 1;
     IOSurfaceRef sf = surf_[surfIdx_];
@@ -288,6 +401,10 @@ bool SpriteSet::hitTest(double x, double y, bool mirrored, Anim a, int variant, 
   int i = (int)((size_t)index % paths_[ai][v].size());
   const Cached* c = decode(ai, v, i);
   if (!c) return false;
+  struct Drop {  // streamed states are not kept in the cache
+    SpriteSet* s; std::tuple<int, int, int> k; bool on;
+    ~Drop() { if (on) s->cache_.erase(k); }
+  } drop{this, std::make_tuple(ai, v, i), stream_ || (ai != (int)Anim::Idle && ai != (int)Anim::Walk)};
   if (mirrored) x = cw_ - x;
   int sx = (int)(x / s_) - c->x0;
   int sy = (int)((ch_ - y) / s_) - c->y0;

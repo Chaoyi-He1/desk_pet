@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "live2d-render",
+      "runtimeExecutable": "/Users/bytedance/miniconda3/bin/python3",
+      "runtimeArgs": ["tools/live2d/server.py", "8765"],
+      "port": 8765
+    }
+  ]
+}

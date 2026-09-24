@@ -105,6 +105,27 @@ std::string VoiceBank::pick(const std::string& skin, const std::string& fallback
   return "";
 }
 
+std::vector<std::string> VoiceBank::samples(const std::string& skin, const std::string& fallbackSkin, size_t n,
+                                            bool oathOk, std::mt19937& rng) const {
+  static const char* kEveryday[] = {"main", "login", "home", "touch", "detail", "profile", "*"};
+  std::vector<std::string> out;
+  for (const std::string* want : {&skin, &fallbackSkin}) {
+    std::vector<std::string> pool;
+    for (const Line& l : lines_) {
+      if (l.oath && !oathOk) continue;
+      if (!l.skin.empty() && l.skin != *want) continue;
+      for (const char* k : kEveryday)
+        if (l.key == k) { pool.push_back(l.text); break; }
+    }
+    std::shuffle(pool.begin(), pool.end(), rng);
+    for (const std::string& t : pool) {
+      if (out.size() >= n) return out;
+      if (std::find(out.begin(), out.end(), t) == out.end()) out.push_back(t);
+    }
+  }
+  return out;
+}
+
 int bubbleDurationMs(const std::string& utf8, int minMs) {
   int chars = 0;
   for (unsigned char c : utf8)

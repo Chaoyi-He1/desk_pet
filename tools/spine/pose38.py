@@ -1,11 +1,12 @@
-"""Pose evaluation for Spine 3.8 skeletons read by skel38: applies one animation at a
-time on top of the setup pose and computes bone world transforms (with IK and
-world-space transform constraints) and attachment world vertices.
+"""Pose evaluation for Spine 3.8 skeletons read by skel38: applies one animation (plus
+optional overlay animations such as facial expressions) on top of the setup pose and
+computes bone world transforms (with IK, transform and path constraints) and attachment
+world vertices.
 
-Standard skeletal-animation math, written independently of the Spine Runtimes.
+Standard skeletal-animation and bezier math, written independently of the Spine Runtimes.
 """
 import math
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 
 DEG = math.pi / 180
 
@@ -487,6 +488,224 @@ class TransformC:
             bone.world(x, y, rotation, sx, sy, bone.ashear_x, shy)
 
 
+class PathC:
+    """Path constraint: moves and rotates bones along the path attachment of a slot.
+
+    Spine 3.8 semantics: the path attachment's vertices come in triples
+    (in-handle, point, out-handle); consecutive points and the handles between them form
+    cubic bezier curves (plus one closing curve for closed paths). Samples are placed along
+    the path at `position` and then every `spacing` (per bone, or scaled by the bone length
+    in 'length' mode). With constantSpeed the distances are measured along the current
+    world-space curves; otherwise they are looked up in the setup-pose curve lengths stored
+    in the attachment and mapped linearly to the curve parameter. Past the ends of an open
+    path the samples continue in a straight line along the end tangents.
+
+    Arc lengths are estimated the way the editor and the game do, so bones land where they
+    do there: each curve's length is the sum of 4 chords (uniform parameter steps), and a
+    sample inside a curve is placed by linear interpolation over 10 chords of that curve.
+    """
+
+    CURVE_STEPS = 4     # chords per curve for the path length table
+    SEGMENT_STEPS = 10  # chords per curve for placing a sample inside its curve
+
+    def __init__(self, data, pose):
+        self.data = data
+        self.pose = pose
+        self.bones = [pose.bones[i] for i in data.bones]
+        self.target = pose.slots[data.target]
+
+    def setup(self):
+        d = self.data
+        self.position, self.spacing = d.position, d.spacing
+        self.rotate_mix, self.translate_mix = d.rotate_mix, d.translate_mix
+
+    def update(self):
+        att = self.target.attachment
+        if att is None or att.type != "path":
+            return
+        rot_mix, tr_mix = self.rotate_mix, self.translate_mix
+        if rot_mix == 0 and tr_mix == 0:
+            return
+        d = self.data
+        tangents = d.rotate_mode == "tangent"
+        chain_scale = d.rotate_mode == "chainScale"
+        pct_spacing = d.spacing_mode == "percent"
+        bones = self.bones
+        n_spaces = len(bones) if tangents else len(bones) + 1
+        spaces = [0.0] * n_spaces
+        lengths = [0.0] * len(bones)  # world bone lengths, for chainScale
+        if chain_scale or not pct_spacing:
+            for i in range(n_spaces - 1):
+                bone = bones[i]
+                setup_len = bone.data.length
+                if setup_len < 1e-5:
+                    continue  # a zero-length bone takes no room on the path
+                world_len = math.hypot(setup_len * bone.a, setup_len * bone.c)
+                lengths[i] = world_len
+                if pct_spacing:
+                    spaces[i + 1] = self.spacing
+                else:
+                    step = setup_len + self.spacing if d.spacing_mode == "length" else self.spacing
+                    spaces[i + 1] = step * world_len / setup_len
+        else:
+            for i in range(1, n_spaces):
+                spaces[i] = self.spacing
+        samples = self.sample(att, spaces, d.position_mode == "percent", pct_spacing)
+
+        bx, by = samples[0][0], samples[0][1]
+        off_rot = d.rotation
+        if off_rot == 0:
+            tip = d.rotate_mode == "chain"
+        else:
+            tip = False
+            tb = self.pose.bones[self.target.data.bone]
+            off_rot *= DEG if tb.a * tb.d - tb.b * tb.c > 0 else -DEG
+        for i, bone in enumerate(bones):
+            bone.wx += (bx - bone.wx) * tr_mix
+            bone.wy += (by - bone.wy) * tr_mix
+            nx, ny = samples[i + 1][:2] if i + 1 < len(samples) else (bx, by)
+            dx, dy = nx - bx, ny - by
+            if chain_scale and lengths[i] != 0:
+                s = (math.hypot(dx, dy) / lengths[i] - 1) * rot_mix + 1
+                bone.a *= s
+                bone.c *= s
+            bx, by = nx, ny
+            if rot_mix > 0:
+                a, b, c, dd = bone.a, bone.b, bone.c, bone.d
+                if tangents:
+                    r = samples[i][2]
+                elif spaces[i + 1] == 0:
+                    r = samples[i + 1][2]
+                else:
+                    r = math.atan2(dy, dx)
+                r -= math.atan2(c, a)
+                if tip:
+                    # the next bone starts at this bone's rotated tip rather than on the path
+                    cs, sn = math.cos(r), math.sin(r)
+                    ln = bone.data.length
+                    bx += (ln * (cs * a - sn * c) - dx) * rot_mix
+                    by += (ln * (sn * a + cs * c) - dy) * rot_mix
+                else:
+                    r += off_rot
+                if r > math.pi:
+                    r -= 2 * math.pi
+                elif r < -math.pi:
+                    r += 2 * math.pi
+                r *= rot_mix
+                cs, sn = math.cos(r), math.sin(r)
+                bone.a, bone.b = cs * a - sn * c, cs * b - sn * dd
+                bone.c, bone.d = sn * a + cs * c, sn * b + cs * dd
+            bone.applied_valid = False
+
+    def sample(self, att, spaces, pct_position, pct_spacing):
+        """[(x, y, tangent angle in radians)] at position, position + spaces[1], ..."""
+        pts = self.pose.world_vertices(self.target, att)
+        n = len(pts) // 3  # path vertices (handle, point, handle)
+        closed = att.closed
+        curves = [(pts[3 * k + 1], pts[3 * k + 2], pts[3 * k + 3], pts[3 * k + 4]) for k in range(n - 1)]
+        if closed:
+            curves.append((pts[3 * n - 2], pts[3 * n - 1], pts[0], pts[1]))
+        if not curves:
+            return [(pts[1][0], pts[1][1], 0.0)] * len(spaces) if pts else [(0.0, 0.0, 0.0)] * len(spaces)
+        nc = len(curves)
+        if att.constant_speed:
+            chords = [None] * nc  # SEGMENT_STEPS tables, built for the curves that get samples
+            cum = []
+            total = 0.0
+            for c in curves:
+                total += self._chords(c, self.CURVE_STEPS)[-1]
+                cum.append(total)
+            setup_total = att.lengths[nc - 1] if att.lengths and len(att.lengths) >= nc else total
+        else:
+            chords = None
+            cum = list(att.lengths[:nc])
+            total = cum[-1]
+            setup_total = total
+        position = self.position
+        if pct_position:
+            position *= total
+        elif att.constant_speed and setup_total:
+            position *= total / setup_total  # fixed positions follow the path when it stretches
+        k = total if pct_spacing else 1.0
+
+        out = []
+        for i, space in enumerate(spaces):
+            position += space * k if i else space
+            p = position
+            if closed:
+                p = math.fmod(p, total) if total else 0.0
+                if p < 0:
+                    p += total
+            elif p < 0:
+                out.append(self._extend(pts[1], pts[2], p, backwards=True))
+                continue
+            elif p > total:
+                out.append(self._extend(pts[3 * n - 2], pts[3 * n - 3], p - total, backwards=False))
+                continue
+            ci = min(bisect_left(cum, p), nc - 1)
+            start = cum[ci - 1] if ci else 0.0
+            span = cum[ci] - start
+            u = (p - start) / span if span > 0 else 0.0
+            if chords is not None:
+                if chords[ci] is None:
+                    chords[ci] = self._chords(curves[ci], self.SEGMENT_STEPS)
+                u = self._arc_to_t(chords[ci], u * chords[ci][-1])
+            out.append(self._bezier(curves[ci], u))
+        return out
+
+    def _chords(self, c, n):
+        """Cumulative chord lengths of a bezier at `n` uniform parameter steps."""
+        out = []
+        acc = 0.0
+        px, py = c[0]
+        for j in range(1, n + 1):
+            x, y, _ = self._bezier(c, j / n, angle=False)
+            acc += math.hypot(x - px, y - py)
+            out.append(acc)
+            px, py = x, y
+        return out
+
+    def _arc_to_t(self, cum, s):
+        n = len(cum)
+        j = min(bisect_left(cum, s), n - 1)
+        prev = cum[j - 1] if j else 0.0
+        seg = cum[j] - prev
+        f = (s - prev) / seg if seg > 0 else 0.0
+        return (j + min(max(f, 0.0), 1.0)) / n
+
+    @staticmethod
+    def _bezier(c, t, angle=True):
+        """(x, y, tangent angle) of the cubic bezier `c` at parameter t. At the very start
+        (t < 0.001) the tangent is the direction of the first handle."""
+        (x0, y0), (x1, y1), (x2, y2), (x3, y3) = c
+        if angle and (t < 1e-5 or t != t):
+            return x0, y0, math.atan2(y1 - y0, x1 - x0)
+        u = 1 - t
+        b0, b1, b2, b3 = u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t
+        x = x0 * b0 + x1 * b1 + x2 * b2 + x3 * b3
+        y = y0 * b0 + y1 * b1 + y2 * b2 + y3 * b3
+        if not angle:
+            return x, y, 0.0
+        if t < 0.001:
+            return x, y, math.atan2(y1 - y0, x1 - x0)
+        # tangent: the point minus the quadratic bezier of the first three control points
+        # (de Casteljau), which is parallel to the derivative
+        qx = x0 * u * u + x1 * 2 * u * t + x2 * t * t
+        qy = y0 * u * u + y1 * 2 * u * t + y2 * t * t
+        return x, y, math.atan2(y - qy, x - qx)
+
+    @staticmethod
+    def _extend(end, other, dist, backwards):
+        """Continue past an end point in a straight line: before the start along
+        start->first handle (dist < 0), after the end along last handle->end."""
+        ex, ey = end
+        if backwards:
+            r = math.atan2(other[1] - ey, other[0] - ex)
+        else:
+            r = math.atan2(ey - other[1], ex - other[0])
+        return ex + dist * math.cos(r), ey + dist * math.sin(r), r
+
+
 class Slot:
     __slots__ = ("data", "color", "attachment", "deform")
 
@@ -506,6 +725,7 @@ class Pose:
         self.slots = [Slot(s) for s in sk.slots]
         self.iks = [Ik(d, self.bones) for d in sk.iks]
         self.tcs = [TransformC(d, self.bones) for d in sk.transforms]
+        self.paths = [PathC(d, self) for d in getattr(sk, "paths", None) or []]
         self._build_cache()
         self.setup()
 
@@ -529,9 +749,38 @@ class Pose:
                     sort_reset(b.children)
                 b.sorted = False
 
+        def sort_path_attachment(att, slot_bone):
+            if att is None or att.type != "path":
+                return
+            if att.bones is None:
+                sort_bone(slot_bone)
+                return
+            i = 0
+            while i < len(att.bones):
+                n = att.bones[i]
+                for bi in att.bones[i + 1:i + 1 + n]:
+                    sort_bone(self.bones[bi])
+                i += 1 + n
+
         cons = [(c.data.order, c) for c in self.iks] + [(c.data.order, c) for c in self.tcs]
+        cons += [(c.data.order, c) for c in self.paths]  # ties: IK, then transform, then path
         for _, c in sorted(cons, key=lambda x: x[0]):
-            if isinstance(c, Ik):
+            if isinstance(c, PathC):
+                # the path's own bones first (every attachment the slot may show), then the
+                # constrained bones; their children are updated again after the constraint
+                si = c.data.target
+                slot_bone = self.bones[self.sk.slots[si].bone]
+                for _, table in self.sk.skins:
+                    for att in table.get(si, {}).values():
+                        sort_path_attachment(att, slot_bone)
+                for bone in c.bones:
+                    sort_bone(bone)
+                cache.append(c)
+                for bone in c.bones:
+                    sort_reset(bone.children)
+                for bone in c.bones:
+                    bone.sorted = True
+            elif isinstance(c, Ik):
                 sort_bone(c.target)
                 parent = c.bones[0]
                 sort_bone(parent)
@@ -566,6 +815,8 @@ class Pose:
             c.setup()
         for c in self.tcs:
             c.setup()
+        for c in self.paths:
+            c.setup()
         for s in self.slots:
             s.color = list(s.data.color)
             s.attachment = self.sk.attachment(s.data.index, s.data.attachment, self.skin)
@@ -578,9 +829,20 @@ class Pose:
             slot.attachment = att
             slot.deform = None
 
-    def apply(self, anim, time):
-        """Setup pose + `anim` at `time` (seconds), then world transforms."""
+    def apply(self, anim, time, overlays=None):
+        """Setup pose + `anim` at `time` (seconds), then world transforms.
+
+        `overlays` [(anim, time), ...] are applied in order on top of the base animation
+        without going back to the setup pose, like higher animation tracks at full alpha:
+        whatever they key (e.g. an expression's face attachments and eye bones) replaces
+        the base animation's value, everything else keeps it."""
         self.setup()
+        self._apply_timelines(anim, time)
+        for oanim, otime in overlays or ():
+            self._apply_timelines(oanim, otime)
+        self.update_world()
+
+    def _apply_timelines(self, anim, time):
         for tl in anim.timelines:
             f = tl.frames
             k = tl.kind
@@ -643,6 +905,23 @@ class Pose:
                 i, p = locate(f, time)
                 v = f[i][1]
                 c.mixes = list(v) if p is None else [lerp(v[j], f[i + 1][1][j], p) for j in range(4)]
+            elif k in ("path_position", "path_spacing", "path_mix"):
+                if time < f[0][0]:
+                    continue
+                c = self.paths[tl.target]
+                i, p = locate(f, time)
+                v = f[i][1]
+                if k == "path_mix":
+                    if p is not None:
+                        v = (lerp(v[0], f[i + 1][1][0], p), lerp(v[1], f[i + 1][1][1], p))
+                    c.rotate_mix, c.translate_mix = v
+                else:
+                    if p is not None:
+                        v = lerp(v, f[i + 1][1], p)
+                    if k == "path_position":
+                        c.position = v
+                    else:
+                        c.spacing = v
             elif k == "deform":
                 skin, slot_i, aname = tl.target
                 slot = self.slots[slot_i]
@@ -662,7 +941,6 @@ class Pose:
                 i, _ = locate(f, time)
                 if f[i][1] is not None:
                     self.draw_order = list(f[i][1])
-        self.update_world()
 
     def update_world(self):
         for b in self.cache_reset:
@@ -673,9 +951,9 @@ class Pose:
             item.update()
 
     # --- geometry ---
-    def world_vertices(self, slot):
-        """World-space vertex list [(x, y), ...] for the slot's region/mesh attachment."""
-        att = slot.attachment
+    def world_vertices(self, slot, att=None):
+        """World-space vertex list [(x, y), ...] for the slot's region/mesh/clipping/path attachment."""
+        att = att or slot.attachment
         bone = self.bones[slot.data.bone]
         if att.type == "region":
             return [(ox * bone.a + oy * bone.b + bone.wx, ox * bone.c + oy * bone.d + bone.wy) for ox, oy in att.offset]

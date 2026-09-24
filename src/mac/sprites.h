@@ -47,6 +47,9 @@ public:
   int groundInset() const { return groundInset_; }
   double headFraction() const { return headFraction_; }
   int fps() const { return fps_; }
+  bool walks() const { return walks_; }
+  int idleMinMs() const { return idleMinMs_; }
+  int idleMaxMs() const { return idleMaxMs_; }
   std::vector<int> variants(pet::Anim a) const;
 
   MacFrame get(pet::Anim a, int variant, int index);
@@ -67,10 +70,16 @@ private:
   bool loadPainting(const std::string& png, int height, bool exact, double scale, std::string* err);
   bool loadAnimated(const std::string& dir, int height, bool exact, std::string* err);
   const Cached* decode(int a, int v, int i);
+  void blitFile(const std::string& png);  // stream a frame straight into the next surface
+  void ensureSurfaces();
+  bool copyPixels(CGImageRef img, unsigned char* dst, size_t dstStride);
 
   bool animated_ = false;
   int cw_ = 0, ch_ = 0, size_ = 0, W_ = 0, H_ = 0, padBottom_ = 4, headTop_ = 0, groundInset_ = 0, fps_ = 0;
   double headFraction_ = 0.22;
+  bool walks_ = true;
+  bool stream_ = false;  // animated paintings: every frame is decoded from disk, nothing cached
+  int idleMinMs_ = 0, idleMaxMs_ = 0;
 
   // painting
   CGImageRef base_ = nullptr;
@@ -89,7 +98,6 @@ private:
   CGRect used_[2] = {CGRectNull, CGRectNull};  // pixels last written, to clear next time
   int surfIdx_ = 0;
   std::tuple<int, int, int> currentKey_{-1, -1, -1};
-  int lastAnim_ = -1;
 };
 
 }  // namespace petmac

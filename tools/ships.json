@@ -1,39 +1,45 @@
 {
-  "_comment": "Curated per-ship data for tools/build_ships.py. num: menu order and the key that ties a skin to its voice table. painting: file under assets/official/. sd: chibi model under assets/official/game/unpacked/char/. wiki: title of the skin's voice table on the bilibili wiki ('' = default table).",
+  "_comment": "Curated per-ship data for tools/build_ships.py. num: menu order and the key that ties a skin to its voice table. painting: file under assets/official/. sd: chibi model under assets/official/game/unpacked/char/. wiki: title of the skin's voice table on the bilibili wiki ('' = default table). dyn: dynamic painting under assets/official/dynamic/ (tools/spine export_painting). l2d: Live2D frames under assets/official/l2d_skins/ (tools/live2d).",
   "belfast": {
-    "name": "贝尔法斯特", "wiki_page": "贝尔法斯特", "default_voice": "02",
+    "name": "贝尔法斯特",
+    "wiki_page": "贝尔法斯特",
+    "default_voice": "02",
     "skins": [
-      {"num": "01", "id": 202129, "name": "改造", "painting": "202129_retrofit_painting_n.png", "sd": "beierfasite_g", "wiki": "贝尔法斯特.改"},
+      {"num": "01", "id": 202129, "name": "改造", "painting": "202129_retrofit_painting_n.png", "sd": "beierfasite_g", "wiki": "贝尔法斯特.改", "dyn": "beierfasite_g"},
       {"num": "02", "id": 202120, "name": "默认女仆装", "painting": "202120_default_painting.png", "sd": "beierfasite", "wiki": ""},
-      {"num": "03", "id": 202121, "name": "彩云之玫瑰", "painting": "202121_iridescent-rosa_painting.png", "sd": "beierfasite_2", "wiki": "彩云之玫瑰"},
+      {"num": "03", "id": 202121, "name": "彩云之玫瑰", "painting": "202121_iridescent-rosa_painting.png", "sd": "beierfasite_2", "wiki": "彩云之玫瑰", "l2d": "beierfasite_2"},
       {"num": "04", "id": 202122, "name": "凛冽的钢之从者", "painting": "202122_serene-steel_painting.png", "sd": "beierfasite_5", "wiki": "凛冽的钢之从者"},
       {"num": "05", "id": 202123, "name": "优雅而高贵的从者", "painting": "202123_noble-attendant_painting.png", "sd": "beierfasite_3", "wiki": "优雅而高贵的从者"},
       {"num": "06", "id": 202124, "name": "女仆长的购物日", "painting": "202124_shopping-casual_painting.png", "sd": "beierfasite_4", "wiki": "女仆长的购物日"},
       {"num": "07", "id": 202125, "name": "完美的代理店长", "painting": "202125_piping-hot-perfection_painting.png", "sd": "beierfasite_7", "wiki": "完美的代理店长"},
       {"num": "08", "id": 202126, "name": "倾城之华扇", "painting": "202126_folded-fascination_painting.png", "sd": "beierfasite_8", "wiki": "倾城之华扇"},
-      {"num": "09", "id": 202127, "name": "至福的侍奉", "painting": "202127_blissful-service_painting_n.png", "sd": "beierfasite_9", "wiki": "至福的侍奉"},
+      {"num": "09", "id": 202127, "name": "至福的侍奉", "painting": "202127_blissful-service_painting_n.png", "sd": "beierfasite_9", "wiki": "至福的侍奉", "dyn": "beierfasite_9"},
       {"num": "10", "id": 202128, "name": "克拉达的誓约", "painting": "202128_pledge-of-claddagh_painting.png", "sd": "beierfasite_h", "wiki": "【誓约】克拉达的誓约", "oath": true},
       {"num": "11", "name": "改造 无舰装", "painting": "manual/belfast_retrofit_cutout.png", "voice": "01"},
       {"num": "12", "name": "小贝法", "sd": "beierfasite_younv", "voice": "02"}
     ]
   },
   "cheshire": {
-    "name": "柴郡", "wiki_page": "柴郡", "default_voice": "01",
+    "name": "柴郡",
+    "wiki_page": "柴郡",
+    "default_voice": "01",
     "skins": [
       {"num": "01", "id": 299030, "name": "默认", "painting": "cheshire_299030_painting.png", "sd": "chaijun", "wiki": ""},
       {"num": "02", "id": 299031, "name": "Dating Summer！", "painting": "cheshire_299031_painting_n.png", "sd": "chaijun_2", "wiki": "Dating Summer！"},
-      {"num": "03", "id": 299032, "name": "音乐绚烂CaitSith", "painting": "cheshire_299032_painting_n.png", "sd": "chaijun_3", "wiki": "音乐绚烂CaitSith"},
-      {"num": "04", "id": 299033, "name": "冰雪公主", "painting": "cheshire_299033_painting_n.png", "sd": "chaijun_4", "wiki": "冰雪公主"},
-      {"num": "05", "id": 299034, "name": "绚烂夜梦", "painting": "cheshire_299034_painting_n.png", "sd": "chaijun_5", "wiki": "绚烂夜梦"},
-      {"num": "06", "id": 299035, "name": "柴郡猫的童话书迷宫", "painting": "cheshire_299035_painting.png", "sd": "chaijun_6", "voice": "01"},
+      {"num": "03", "id": 299032, "name": "音乐绚烂CaitSith", "painting": "cheshire_299032_painting_n.png", "sd": "chaijun_3", "wiki": "音乐绚烂CaitSith", "l2d": "chaijun_3"},
+      {"num": "04", "id": 299033, "name": "冰雪公主", "painting": "cheshire_299033_painting_n.png", "sd": "chaijun_4", "wiki": "冰雪公主", "l2d": "chaijun_4"},
+      {"num": "05", "id": 299034, "name": "绚烂夜梦", "painting": "cheshire_299034_painting_n.png", "sd": "chaijun_5", "wiki": "绚烂夜梦", "l2d": "chaijun_5"},
+      {"num": "06", "id": 299035, "name": "柴郡猫的童话书迷宫", "painting": "cheshire_299035_painting.png", "sd": "chaijun_6", "voice": "01", "l2d": "chaijun_6"},
       {"num": "07", "id": 299038, "name": "White Seaside Melody", "painting": "cheshire_299038_painting_n.png", "sd": "chaijun_h", "wiki": "【誓约】White Seaside Melody！", "oath": true},
       {"num": "08", "name": "童年", "sd": "chaijun_younv", "voice": "01"}
     ]
   },
   "shinano": {
-    "name": "信浓", "wiki_page": "信浓", "default_voice": "01",
+    "name": "信浓",
+    "wiki_page": "信浓",
+    "default_voice": "01",
     "skins": [
-      {"num": "01", "id": 307080, "name": "默认", "painting": "shinano_307080_painting.png", "sd": "xinnong", "wiki": ""},
+      {"num": "01", "id": 307080, "name": "默认", "painting": "shinano_307080_painting.png", "sd": "xinnong", "wiki": "", "dyn": "xinnong"},
       {"num": "02", "id": 307081, "name": "胧月十夜", "painting": "shinano_307081_painting.png", "sd": "xinnong_2", "wiki": "胧月十夜"},
       {"num": "03", "id": 307082, "name": "轰鸣的银轮", "painting": "shinano_307082_painting_n.png", "sd": "xinnong_3", "wiki": "轰鸣的银轮"},
       {"num": "04", "id": 307083, "name": "白沙幽梦", "painting": "shinano_307083_painting.png", "sd": "xinnong_4", "wiki": "白沙幽梦"},
@@ -43,17 +49,19 @@
     ]
   },
   "noshiro": {
-    "name": "能代", "wiki_page": "能代", "default_voice": "01",
+    "name": "能代",
+    "wiki_page": "能代",
+    "default_voice": "01",
     "skins": [
       {"num": "01", "id": 302210, "name": "默认", "painting": "noshiro_302210_painting.png", "sd": "nengdai", "wiki": ""},
-      {"num": "02", "id": 302211, "name": "祭典的秘境？", "painting": "noshiro_302211_painting.png", "sd": "nengdai_2", "wiki": "祭典的秘境？"},
+      {"num": "02", "id": 302211, "name": "祭典的秘境？", "painting": "noshiro_302211_painting.png", "sd": "nengdai_2", "wiki": "祭典的秘境？", "l2d": "nengdai_2"},
       {"num": "03", "id": 302212, "name": "夜响的绝园", "painting": "noshiro_302212_painting_n.png", "sd": "nengdai_4", "wiki": "夜响的绝园"},
       {"num": "04", "id": 302213, "name": "冬雪沁香", "painting": "noshiro_302213_painting_n.png", "sd": "nengdai_6", "wiki": "冬雪沁香"},
       {"num": "05", "id": 302214, "name": "宁静的六叠间", "painting": "noshiro_302214_painting_n.png", "sd": "nengdai_5", "wiki": "宁静的六叠间"},
       {"num": "06", "id": 302215, "name": "需要少冰吗？", "painting": "noshiro_302215_painting_n.png", "sd": "nengdai_7", "wiki": "需要少冰吗？"},
-      {"num": "07", "id": 302216, "name": "阳光·沙滩·假日", "painting": "noshiro_302216_painting_n.png", "sd": "nengdai_3", "wiki": "阳光·沙滩·假日"},
+      {"num": "07", "id": 302216, "name": "阳光·沙滩·假日", "painting": "noshiro_302216_painting_n.png", "sd": "nengdai_3", "wiki": "阳光·沙滩·假日", "l2d": "nengdai_3"},
       {"num": "08", "id": 302217, "name": "香奢之约", "painting": "noshiro_302217_painting_n.png", "sd": "nengdai_8", "wiki": "香奢之约"},
-      {"num": "09", "id": 332210, "name": "月夜花泉", "painting": "noshiro_332210_painting.png", "sd": "nengdai_9", "wiki": "月夜花泉"},
+      {"num": "09", "id": 332210, "name": "月夜花泉", "painting": "noshiro_332210_painting.png", "sd": "nengdai_9", "wiki": "月夜花泉", "dyn": "nengdai_9"},
       {"num": "10", "id": 302218, "name": "恋结奇谭", "painting": "noshiro_302218_painting.png", "sd": "nengdai_h", "wiki": "【誓约】恋结奇谭", "oath": true},
       {"num": "11", "name": "偶像", "sd": "nengdai_idol", "voice": "01"}
     ]

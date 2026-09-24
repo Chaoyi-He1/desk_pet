@@ -20,6 +20,7 @@
 #include "core/screen.h"
 #include "core/skin.h"
 #include "core/voice.h"
+#include "core/chat.h"
 #include "mac/bubble.h"
 #include "mac/sprites.h"
 
@@ -113,6 +114,49 @@ struct Ship {
   pet::Ini ini;
 };
 
+// ---------- chat input ----------
+
+// A small key window with one text field; Enter sends, Esc closes.
+@interface ChatPanel : NSPanel <NSTextFieldDelegate>
+@property(nonatomic, strong) NSTextField* field;
+@property(nonatomic, copy) void (^onSend)(NSString*);
+@end
+
+@implementation ChatPanel
+- (instancetype)init {
+  self = [super initWithContentRect:NSMakeRect(0, 0, 320, 34)
+                          styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
+                            backing:NSBackingStoreBuffered
+                              defer:NO];
+  if (self) {
+    self.title = @"和她聊天";
+    self.level = NSFloatingWindowLevel;
+    self.hidesOnDeactivate = NO;
+    self.releasedWhenClosed = NO;
+    self.floatingPanel = YES;
+    self.field = [[NSTextField alloc] initWithFrame:NSMakeRect(6, 6, 308, 22)];
+    self.field.placeholderString = @"说点什么，回车发送";
+    self.field.delegate = self;
+    self.field.target = self;
+    self.field.action = @selector(send:);
+    [self.contentView addSubview:self.field];
+  }
+  return self;
+}
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (void)send:(id)sender {
+  NSString* t = [self.field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (t.length == 0 || !self.field.enabled) return;
+  self.field.stringValue = @"";
+  if (self.onSend) self.onSend(t);
+}
+- (void)cancelOperation:(id)sender { [self orderOut:nil]; }
+- (BOOL)control:(NSControl*)c textView:(NSTextView*)tv doCommandBySelector:(SEL)sel {
+  if (sel == @selector(cancelOperation:)) { [self orderOut:nil]; return YES; }
+  return NO;
+}
+@end
+
 // ---------- view ----------
 
 @class PetController;
@@ -169,6 +213,16 @@ struct Ship {
   pet::BrainConfig cfgBase_;
   int height_, configHeight_, bubbleMs_, chatterMin_, savedX_, pendingWheel_, timerMs_;
   bool userHeight_, mirrorLeft_, hideOnFullscreen_, userHidden_, fsHidden_, clickThrough_;
+  // Paintings (static, dynamic, Live2D) and chibis keep separate sizes: [0] painting, [1] chibi.
+  int heightK_[2];
+  bool userHeightK_[2];
+  int kind_;
+  bool dailyRandom_;
+  std::string lastDay_;
+  ChatPanel* chatPanel_;
+  pet::ChatSession chat_;
+  bool chatBusy_;
+  std::string chatKey_;  // ship/skin the chat session was set up for
   double lastTick_, hiddenSince_;
   pet::Frame last_;
   CGImageRef shownImage_;
@@ -207,10 +261,17 @@ struct Ship {
   fallbackVoices_ = pet::VoiceBank::parsePlain(readFile(assets_ + "/lines.txt"));
 
   pet::Ini saved = pet::Ini::parse(readFile(settingsFile()));
-  if (saved.has("", "height")) {
-    height_ = pet::clampHeight(saved.getInt("", "height", configHeight_));
-    userHeight_ = true;
+  for (int k = 0; k < 2; ++k) { heightK_[k] = configHeight_; userHeightK_[k] = false; }
+  kind_ = 0;
+  chatBusy_ = false;
+  // Older settings had one "height" for every skin: it belonged to the kind shown then.
+  int legacyKind = saved.has("", "height_sd") ? 0 : -1;
+  if (saved.has("", "height_sd")) {
+    heightK_[1] = pet::clampHeight(saved.getInt("", "height_sd", configHeight_));
+    userHeightK_[1] = true;
   }
+  dailyRandom_ = saved.getInt("", "daily_random", 0) != 0;
+  lastDay_ = saved.get("", "last_day", "");
   chatterMin_ = saved.getInt("", "chatter", chatterMin_);
   clickThrough_ = saved.getInt("", "clickthrough", 0) != 0;
   savedX_ = saved.getInt("", "x", savedX_);
@@ -234,6 +295,22 @@ struct Ship {
   int ship = std::max(0, [self shipIndex:wantShip]);
   const Ship& s = ships_[ship];
   if (std::find(s.skins.begin(), s.skins.end(), wantSkin) == s.skins.end()) wantSkin = s.skins.front();
+  if (saved.has("", "height")) {
+    int savedShip = [self shipIndex:saved.get("", "ship", "")];
+    std::string savedSkin = saved.get("", "skin", "");
+    bool savedOk = savedShip >= 0 && std::find(ships_[savedShip].skins.begin(), ships_[savedShip].skins.end(),
+                                                savedSkin) != ships_[savedShip].skins.end();
+    int k = legacyKind >= 0 ? legacyKind : (savedOk ? [self kindOfShip:savedShip skin:savedSkin] : 0);
+    heightK_[k] = pet::clampHeight(saved.getInt("", "height", configHeight_));
+    userHeightK_[k] = true;
+  }
+  // 每天随机换装: the first launch of a day picks a random skin.
+  if (dailyRandom_ && lastDay_ != [self today] && !getenv("BELFASTPET_SKIN")) {
+    std::pair<int, std::string> r = [self randomSkinExcept:ship skin:wantSkin];
+    ship = r.first;
+    wantSkin = r.second;
+  }
+  lastDay_ = [self today];
 
   bubble_ = [[PetBubble alloc] init];
   [self createWindow];
@@ -268,10 +345,15 @@ struct Ship {
 }
 
 - (void)writeSettings {
+  if (getenv("BELFASTPET_SNAPSHOT") || getenv("BELFASTPET_SKIN") || getenv("BELFASTPET_CHAT") || getenv("BELFASTPET_INVISIBLE"))
+    return;  // test runs never touch the user's settings
   std::ofstream out(settingsFile(), std::ios::binary | std::ios::trunc);
   if (ship_ >= 0) out << "ship=" << ships_[ship_].key << "\n";
   out << "skin=" << skin_ << "\n";
-  if (userHeight_) out << "height=" << height_ << "\n";
+  if (userHeightK_[0]) out << "height=" << heightK_[0] << "\n";
+  if (userHeightK_[1]) out << "height_sd=" << heightK_[1] << "\n";
+  out << "daily_random=" << (dailyRandom_ ? 1 : 0) << "\n";
+  out << "last_day=" << lastDay_ << "\n";
   out << "chatter=" << chatterMin_ << "\n";
   out << "clickthrough=" << (clickThrough_ ? 1 : 0) << "\n";
   if (brain_) out << "x=" << last_.x << "\n";
@@ -297,6 +379,32 @@ struct Ship {
   return -1;
 }
 
+// 0: painting (static PNG, dynamic painting, Live2D), 1: chibi.
+- (int)kindOfShip:(int)ship skin:(const std::string&)skin {
+  std::string path = shipsDir_ + "/" + ships_[ship].key + "/skins/" + skin;
+  BOOL isDir = NO;
+  [[NSFileManager defaultManager] fileExistsAtPath:@(path.c_str()) isDirectory:&isDir];
+  if (!isDir) return 0;
+  pet::Ini meta = pet::Ini::parse(readFile(path + "/meta.ini"));
+  return meta.get("sequence", "kind", "chibi") == "painting" ? 0 : 1;
+}
+
+- (std::string)today {
+  NSDateFormatter* f = [[NSDateFormatter alloc] init];
+  f.dateFormat = @"yyyy-MM-dd";
+  return [f stringFromDate:[NSDate date]].UTF8String;
+}
+
+- (std::pair<int, std::string>)randomSkinExcept:(int)ship skin:(const std::string&)skin {
+  std::vector<std::pair<int, std::string>> all;
+  for (size_t si = 0; si < ships_.size(); ++si)
+    for (const std::string& k : ships_[si].skins)
+      if (!((int)si == ship && k == skin)) all.push_back({(int)si, k});
+  if (all.empty()) return {ship, skin};
+  std::uniform_int_distribution<size_t> d(0, all.size() - 1);
+  return all[d(rng_)];
+}
+
 - (std::string)voiceSkinOath:(bool*)oath {
   const Ship& s = ships_[ship_];
   std::string num = pet::skinNumber(skin_);
@@ -306,7 +414,7 @@ struct Ship {
 }
 
 - (void)say:(pet::Scene)scene {
-  if (ship_ < 0 || !brain_ || !last_.visible) return;
+  if (ship_ < 0 || !brain_ || !last_.visible || getenv("BELFASTPET_INVISIBLE")) return;
   bool oath = false;
   std::string skin = [self voiceSkinOath:&oath];
   std::string fallback = ships_[ship_].ini.get("ship", "default_voice", "01");
@@ -325,15 +433,21 @@ struct Ship {
 - (bool)loadShip:(int)ship skin:(const std::string&)skin error:(std::string*)err {
   std::unique_ptr<petmac::SpriteSet> next(new petmac::SpriteSet());
   std::string path = shipsDir_ + "/" + ships_[ship].key + "/skins/" + skin;
-  if (!next->load(path, height_, userHeight_, NSScreen.mainScreen.backingScaleFactor, err)) return false;
-  height_ = next->size();
+  int kind = [self kindOfShip:ship skin:skin];
+  if (!next->load(path, heightK_[kind], userHeightK_[kind], NSScreen.mainScreen.backingScaleFactor, err)) return false;
+  kind_ = kind;
+  heightK_[kind] = next->size();
+  height_ = heightK_[kind];
+  userHeight_ = userHeightK_[kind];
   int x = brain_ ? last_.x : savedX_;
   pet::BrainConfig cfg = cfgBase_;
   cfg.spriteW = next->width();
   cfg.spriteH = next->height();
   cfg.groundInset = next->groundInset();
   cfg.headFraction = next->headFraction();
-  cfg.canWalk = next->animated();  // a painting sliding across the desktop looks wrong
+  cfg.canWalk = next->animated() && next->walks();  // a painting sliding across the desktop looks wrong
+  if (next->idleMinMs() > 0) cfg.idleMinMs = next->idleMinMs();
+  if (next->idleMaxMs() > 0) cfg.idleMaxMs = next->idleMaxMs();
   for (int i = 0; i < (int)Anim::Count; ++i) {
     cfg.variants[i] = next->variants((Anim)i);
     if (next->fps() > 0) cfg.fps[i] = next->fps();  // chibi frames were rendered at one rate
@@ -433,7 +547,7 @@ struct Ship {
 
 - (void)applyFrame:(const pet::Frame&)f {
   if (!f.visible) {
-    [panel_ orderOut:nil];
+    [self fadeOut];
     [bubble_ hide];
     shownImage_ = nullptr;
     return;
@@ -472,8 +586,34 @@ struct Ship {
   CGFloat sh = screenH();
   NSPoint origin = NSMakePoint(f.x, sh - f.y - sprites_->height());
   if (!NSEqualPoints(panel_.frame.origin, origin)) [panel_ setFrameOrigin:origin];
-  if (!panel_.visible) [panel_ orderFrontRegardless];
+  if (!panel_.visible || (panel_.alphaValue < 1 && !getenv("BELFASTPET_INVISIBLE"))) [self fadeIn];
   [bubble_ moveToAnchorX:f.x + sprites_->width() / 2.0 anchorY:sh - f.y - sprites_->headTop()];
+}
+
+// Short fades when she appears or leaves (blyy-style), a few alpha steps done by the compositor.
+- (void)fadeIn {
+  if (!panel_.visible) {
+    panel_.alphaValue = 0;
+    [panel_ orderFrontRegardless];
+  }
+  // BELFASTPET_INVISIBLE: test runs stay practically invisible on the user's screen.
+  CGFloat full = getenv("BELFASTPET_INVISIBLE") ? 0.01 : 1.0;
+  [NSAnimationContext runAnimationGroup:^(NSAnimationContext* ctx) {
+    ctx.duration = 0.25;
+    panel_.animator.alphaValue = full;
+  }];
+}
+
+- (void)fadeOut {
+  if (!panel_.visible) return;
+  [NSAnimationContext
+      runAnimationGroup:^(NSAnimationContext* ctx) {
+        ctx.duration = 0.2;
+        panel_.animator.alphaValue = 0;
+      }
+      completionHandler:^{
+        if (!last_.visible) [panel_ orderOut:nil];  // still meant to be hidden
+      }];
 }
 
 - (BOOL)hitAt:(NSPoint)p {
@@ -566,23 +706,23 @@ struct Ship {
 
 - (void)applyHeight:(int)height {
   int h = pet::clampHeightToScreen(height, (int)NSScreen.mainScreen.visibleFrame.size.height);
-  if (h == height_ && userHeight_) return;
-  int prev = height_;
-  bool prevUser = userHeight_;
-  height_ = h;
-  userHeight_ = YES;
+  if (h == heightK_[kind_] && userHeightK_[kind_]) return;
+  int prev = heightK_[kind_];
+  bool prevUser = userHeightK_[kind_];
+  heightK_[kind_] = h;
+  userHeightK_[kind_] = true;
   std::string err;
   if (![self loadShip:ship_ skin:skin_ error:&err]) {
-    height_ = prev;
-    userHeight_ = prevUser;
+    heightK_[kind_] = prev;
+    userHeightK_[kind_] = prevUser;
     return;
   }
   [self writeSettings];
 }
 
 - (void)resetHeight:(id)sender {
-  userHeight_ = NO;
-  height_ = configHeight_;
+  userHeightK_[kind_] = false;
+  heightK_[kind_] = configHeight_;
   std::string err;
   [self loadShip:ship_ skin:skin_ error:&err];
   [self writeSettings];
@@ -650,6 +790,9 @@ struct Ship {
     shipItem.submenu = sub;
     shipItem.state = (int)si == ship_ ? NSControlStateValueOn : NSControlStateValueOff;
   }
+  [skinMenu addItem:[NSMenuItem separatorItem]];
+  [self add:skinMenu title:@"随机换一套" action:@selector(randomSkin:) tag:0 on:false];
+  [self add:skinMenu title:@"每天随机换装" action:@selector(toggleDailyRandom:) tag:0 on:dailyRandom_];
   [m addItemWithTitle:@"切换形象" action:nil keyEquivalent:@""].submenu = skinMenu;
 
   NSMenu* sizeMenu = [[NSMenu alloc] init];
@@ -668,6 +811,10 @@ struct Ship {
           tag:c on:c == chatterMin_];
   [m addItemWithTitle:@"自动说话" action:nil keyEquivalent:@""].submenu = chatMenu;
 
+  pet::ChatConfig cc = [self chatConfig];
+  [self add:m title:(cc.ready() ? @"和她聊天…" : @"和她聊天（需先填写 API Key）…") action:@selector(openChat:) tag:0 on:false];
+  [self add:m title:@"聊天设置…" action:@selector(openChatSettings:) tag:0 on:false];
+  [m addItem:[NSMenuItem separatorItem]];
   [self add:m title:@"鼠标穿透（用状态栏图标关闭）" action:@selector(toggleClickThrough:) tag:0 on:clickThrough_];
   [self add:m title:@"全屏时自动隐藏" action:@selector(toggleFullscreenHide:) tag:0 on:hideOnFullscreen_];
   if (@available(macOS 13.0, *)) {
@@ -682,6 +829,122 @@ struct Ship {
 }
 
 - (void)refreshMenu { status_.menu = [self buildMenu]; }
+
+- (void)randomSkin:(id)s {
+  std::pair<int, std::string> r = [self randomSkinExcept:ship_ skin:skin_];
+  std::string err;
+  if ([self loadShip:r.first skin:r.second error:&err]) {
+    [self writeSettings];
+    [self say:pet::Scene::Login];
+  }
+}
+
+- (void)toggleDailyRandom:(id)s {
+  dailyRandom_ = !dailyRandom_;
+  [self writeSettings];
+  [self refreshMenu];
+}
+
+// ---------- chat (optional; any OpenAI-compatible endpoint, key in chat.ini) ----------
+
+- (std::string)chatIniPath { return userDataDir() + "/chat.ini"; }
+
+- (pet::ChatConfig)chatConfig { return pet::ChatConfig::parse(readFile([self chatIniPath])); }
+
+- (void)openChatSettings:(id)s {
+  std::string p = [self chatIniPath];
+  if (readFile(p).empty()) {
+    std::ofstream out(p, std::ios::binary);
+    out << pet::chatIniTemplate();
+  }
+  [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:@(p.c_str())]];
+}
+
+- (void)openChat:(id)s {
+  pet::ChatConfig cc = [self chatConfig];
+  if (!cc.ready()) {
+    [self openChatSettings:nil];
+    return;
+  }
+  if (!chatPanel_) {
+    chatPanel_ = [[ChatPanel alloc] init];
+    __weak PetController* weakSelf = self;
+    chatPanel_.onSend = ^(NSString* text) { [weakSelf sendChat:text]; };
+  }
+  CGFloat sh = screenH();
+  NSRect work = NSScreen.mainScreen.visibleFrame;
+  CGFloat x = last_.x + sprites_->width() / 2.0 - chatPanel_.frame.size.width / 2;
+  CGFloat y = sh - last_.y - sprites_->height() - chatPanel_.frame.size.height - 6;  // just below her
+  if (y < NSMinY(work)) y = sh - last_.y - sprites_->headTop() + 60;                // or above the bubble
+  x = std::max(NSMinX(work), std::min(x, NSMaxX(work) - chatPanel_.frame.size.width));
+  [chatPanel_ setFrameOrigin:NSMakePoint(x, y)];
+  [NSApp activateIgnoringOtherApps:YES];
+  [chatPanel_ makeKeyAndOrderFront:nil];
+  [chatPanel_ makeFirstResponder:chatPanel_.field];
+}
+
+- (void)prepareChatSession {
+  std::string key = ships_[ship_].key + "/" + skin_;
+  if (key == chatKey_) return;
+  chatKey_ = key;
+  bool oath = false;
+  std::string vskin = [self voiceSkinOath:&oath];
+  std::string fallback = ships_[ship_].ini.get("ship", "default_voice", "01");
+  pet::ChatConfig cc = [self chatConfig];
+  std::vector<std::string> samples = voices_.samples(vskin, fallback, 8, oath, rng_);
+  chat_.reset(pet::chatSystemPrompt(ships_[ship_].name, pet::skinOutfitName(skin_), samples, cc.maxReplyChars));
+}
+
+- (void)showBubble:(const std::string&)text {
+  if (getenv("BELFASTPET_INVISIBLE")) return;
+  CGFloat sh = screenH();
+  [bubble_ showText:@(text.c_str())
+            anchorX:last_.x + sprites_->width() / 2.0
+            anchorY:sh - last_.y - sprites_->headTop()
+         durationMs:pet::bubbleDurationMs(text, bubbleMs_) + 2000];
+}
+
+- (void)sendChat:(NSString*)text {
+  if (chatBusy_) return;
+  pet::ChatConfig cc = [self chatConfig];
+  if (!cc.ready()) return;
+  [self prepareChatSession];
+  std::string user = text.UTF8String;
+  std::string body = chat_.requestBody(cc, user);
+  NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@(cc.endpoint().c_str())]];
+  req.HTTPMethod = @"POST";
+  req.timeoutInterval = 60;
+  [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+  [req setValue:[@"Bearer " stringByAppendingString:@(cc.apiKey.c_str())] forHTTPHeaderField:@"Authorization"];
+  req.HTTPBody = [NSData dataWithBytes:body.data() length:body.size()];
+  chatBusy_ = true;
+  chatPanel_.field.enabled = NO;
+  [self showBubble:"……"];
+  int maxTurns = cc.maxTurns, maxChars = cc.maxReplyChars;
+  [[[NSURLSession sharedSession]
+      dataTaskWithRequest:req
+        completionHandler:^(NSData* data, NSURLResponse* resp, NSError* error) {
+          std::string json = data ? std::string((const char*)data.bytes, data.length) : std::string();
+          std::string errText = error ? std::string(error.localizedDescription.UTF8String) : std::string();
+          dispatch_async(dispatch_get_main_queue(), ^{
+            chatBusy_ = false;
+            chatPanel_.field.enabled = YES;
+            [chatPanel_ makeFirstResponder:chatPanel_.field];
+            std::string reply, why;
+            if (!errText.empty()) {
+              [self showBubble:"（连接失败：" + errText + "）"];
+            } else if (pet::parseChatReply(json, &reply, &why)) {
+              reply = pet::clipReply(reply, maxChars + 20);
+              chat_.accept(user, reply, maxTurns);
+              [self showBubble:reply];
+            } else {
+              [self showBubble:"（" + why + "）"];
+            }
+            if (getenv("BELFASTPET_CHAT"))
+              NSLog(@"chat reply=[%s] why=[%s] net=[%s] turns=%zu", reply.c_str(), why.c_str(), errText.c_str(), chat_.turns());
+          });
+        }] resume];
+}
 
 - (void)toggleHidden:(id)s {
   userHidden_ = !userHidden_;
@@ -766,6 +1029,20 @@ static void brainPoint(int* x, int* y) {
 }
 
 - (void)maybeSnapshot {
+  if (const char* msg = getenv("BELFASTPET_CHAT")) {  // debug aid: send two chat lines, then quit
+    NSString* m = @(msg);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      [self openChat:nil];
+      [self sendChat:m];
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self sendChat:@"第二句"];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+          [NSApp terminate:nil];
+        });
+      });
+    });
+    return;
+  }
   const char* prefix = getenv("BELFASTPET_SNAPSHOT");
   if (!prefix) return;
   NSString* pfx = @(prefix);

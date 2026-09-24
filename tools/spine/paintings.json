@@ -1,0 +1,7 @@
+{
+  "_comment": "Dynamic paintings exported by tools/spine/export_paintings.py. hide: regexes of slot names that are scenery (background, weather, water) and are left out so the character stands on the desktop like the static no-background painting. expressions: optional [body, head] expression animations for the click reactions. ground_patch: keep the scenery right under the character (rows top..bottom fade in, optional columns left..right), for paintings whose character sits on its background.",
+  "beierfasite_g": {"skel": "assets/official/game/unpacked/spinepainting/beierfasite_g_res", "hide": ["^bj_\\d+$", "^bj_piaodai_", "^renyy_"]},
+  "beierfasite_9": {"skel": "assets/official/game/unpacked/spinepainting/beierfasite_9_res", "hide": ["^bg_[abd]$"]},
+  "xinnong": {"skel": "assets/official/game/unpacked/spinepainting/xinnong_res", "hide": []},
+  "nengdai_9": {"skel": "assets/official/game/unpacked/spinepainting/nengdai_9_res", "hide": ["^bj$", "^bj_bu", "^hb\\d", "^deng", "^shui", "^muban", "^mx\\d", "^Smoke", "^fwg", "^yan", "^tx_shizi"], "ground_patch": {"top": 0.55, "bottom": 0.78, "grow": 32, "feather": 12}}
+}

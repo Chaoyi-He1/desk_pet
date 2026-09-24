@@ -8,9 +8,11 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <sstream>
 
+#include "core/frames.h"
 #include "core/ini.h"
 #include "core/pose.h"
 #include "core/skin.h"
@@ -71,6 +73,7 @@ bool alphaBox(const uint32_t* px, int w, int h, int stride, int* x0, int* y0, in
 
 SpriteSet::~SpriteSet() {
   for (auto& kv : cache_) DeleteObject(kv.second.bmp);
+  if (transient_.bmp) DeleteObject(transient_.bmp);
   for (HBITMAP b : owned_) DeleteObject(b);
   if (gdiplus_) Gdiplus::GdiplusShutdown(gdiplus_);
 }
@@ -159,6 +162,7 @@ bool SpriteSet::loadPainting(const std::wstring& png, int height, bool exact, st
     SpriteFrame f;
     void* bits = nullptr;
     f.bmp = newDib(cw_, ch_, &bits);
+    f.id = ++serial_;
     if (!f.bmp) return f;
     owned_.push_back(f.bmp);
     f.w = cw_;
@@ -223,7 +227,8 @@ bool SpriteSet::loadAnimated(const std::wstring& dir, int height, bool exact, st
       if (f == name) vfolders.insert(vfolders.begin(), f);
       else if (f.size() > name.size() + 1 && f.compare(0, name.size() + 1, name + L"_") == 0) vfolders.push_back(f);
     for (auto& vf : vfolders) {
-      std::vector<std::wstring> files = listDir(dir + L"\\" + vf, false, L"*.png");
+      std::vector<std::wstring> files = listDir(dir + L"\\" + vf, false, L"*.bpf");  // fast frames first
+      if (files.empty()) files = listDir(dir + L"\\" + vf, false, L"*.png");
       if (files.empty()) continue;
       for (auto& f : files) f = dir + L"\\" + vf + L"\\" + f;
       paths_[ai].push_back(files);
@@ -233,9 +238,16 @@ bool SpriteSet::loadAnimated(const std::wstring& dir, int height, bool exact, st
     if (err) *err = L"动画形象缺少 idle 帧：\n" + dir;
     return false;
   }
-  // "Size" for chibis: the character is 80% of it, so paintings and chibis look alike.
+  // "Size" for chibis: the character is 80% of it, so paintings and chibis look alike;
+  // animated paintings (Live2D, dynamic paintings) use size_ratio=1: the picture height.
   int size = exact ? pet::clampHeight(height) : height;
-  scale_ = (std::min)(2.0, 0.8 * size / charH);
+  scale_ = (std::min)(2.0, meta.getDouble("sequence", "size_ratio", 0.8) * size / charH);
+  walks_ = meta.getInt("sequence", "walk", 1) != 0;
+  // Painting-sized frames (dynamic paintings, Live2D) would need 100+ MB cached: decode each
+  // one when shown instead (.bpf frames decode in ~1 ms plus the scale).
+  stream_ = meta.get("sequence", "kind", "") == "painting";
+  idleMinMs_ = meta.getInt("sequence", "idle_min_ms", 0);
+  idleMaxMs_ = meta.getInt("sequence", "idle_max_ms", 0);
   size_ = size;
   cw_ = (std::max)(1, (int)std::lround(srcW * scale_));
   ch_ = (std::max)(1, (int)std::lround(srcH * scale_));
@@ -246,10 +258,58 @@ bool SpriteSet::loadAnimated(const std::wstring& dir, int height, bool exact, st
   return true;
 }
 
-SpriteFrame SpriteSet::decode(const std::wstring& png) {
+// Crops a display-size premultiplied BGRA canvas to its visible pixels as a DIB.
+SpriteFrame SpriteSet::cropToDib(const uint8_t* px, size_t stride) {
+  SpriteFrame f;
+  int x0, y0, x1, y1;
+  if (!alphaBox((const uint32_t*)px, cw_, ch_, (int)(stride / 4), &x0, &y0, &x1, &y1)) { x0 = y0 = 0; x1 = y1 = 0; }
+  f.offX = x0;
+  f.offY = y0;
+  f.w = x1 - x0 + 1;
+  f.h = y1 - y0 + 1;
+  void* bits = nullptr;
+  f.bmp = newDib(f.w, f.h, &bits);
+  f.id = ++serial_;
+  if (f.bmp)
+    for (int y = 0; y < f.h; ++y)
+      std::memcpy((char*)bits + (size_t)y * f.w * 4, px + (size_t)(y0 + y) * stride + (size_t)x0 * 4, (size_t)f.w * 4);
+  return f;
+}
+
+SpriteFrame SpriteSet::decode(const std::wstring& path) {
   using namespace Gdiplus;
   SpriteFrame f;
-  Bitmap src(png.c_str());
+  bool bpf = path.size() > 4 && _wcsicmp(path.c_str() + path.size() - 4, L".bpf") == 0;
+  if (bpf) {
+    // Palette + LZ4 frame: expand at source size, then scale to the display size.
+    std::ifstream in(path.c_str(), std::ios::binary);
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    pet::BpfFrame bf;
+    if (data.empty() || !pet::parseBpf(data.data(), data.size(), &bf)) return f;
+    std::vector<uint32_t> src((size_t)bf.width * bf.height);
+    pet::expandBpf(bf, (uint8_t*)src.data(), (size_t)bf.width * 4);
+    if (cw_ <= bf.width && ch_ <= bf.height) {
+      std::vector<uint32_t> dst((size_t)cw_ * ch_);
+      pet::downscaleBGRA(src.data(), bf.width, bf.height, bf.width, dst.data(), cw_, ch_, cw_);
+      return cropToDib((const uint8_t*)dst.data(), (size_t)cw_ * 4);
+    }
+    // enlarging: let GDI+ interpolate
+    Bitmap srcBmp(bf.width, bf.height, bf.width * 4, PixelFormat32bppPARGB, (BYTE*)src.data());
+    Bitmap canvas(cw_, ch_, PixelFormat32bppPARGB);
+    {
+      Graphics g(&canvas);
+      g.SetInterpolationMode(InterpolationModeBilinear);
+      g.SetPixelOffsetMode(PixelOffsetModeHalf);
+      g.DrawImage(&srcBmp, Rect(0, 0, cw_, ch_), 0, 0, bf.width, bf.height, UnitPixel);
+    }
+    BitmapData bd;
+    Rect all(0, 0, cw_, ch_);
+    if (canvas.LockBits(&all, ImageLockModeRead, PixelFormat32bppPARGB, &bd) != Ok) return f;
+    f = cropToDib((const uint8_t*)bd.Scan0, (size_t)bd.Stride);
+    canvas.UnlockBits(&bd);
+    return f;
+  }
+  Bitmap src(path.c_str());
   if (src.GetLastStatus() != Ok) return f;
   Bitmap canvas(cw_, ch_, PixelFormat32bppPARGB);
   {
@@ -261,20 +321,7 @@ SpriteFrame SpriteSet::decode(const std::wstring& png) {
   BitmapData bd;
   Rect all(0, 0, cw_, ch_);
   if (canvas.LockBits(&all, ImageLockModeRead, PixelFormat32bppPARGB, &bd) != Ok) return f;
-  int x0, y0, x1, y1;
-  const uint32_t* px = (const uint32_t*)bd.Scan0;
-  if (!alphaBox(px, cw_, ch_, bd.Stride / 4, &x0, &y0, &x1, &y1)) { x0 = y0 = 0; x1 = y1 = 0; }
-  f.offX = x0;
-  f.offY = y0;
-  f.w = x1 - x0 + 1;
-  f.h = y1 - y0 + 1;
-  void* bits = nullptr;
-  f.bmp = newDib(f.w, f.h, &bits);
-  if (f.bmp) {
-    for (int y = 0; y < f.h; ++y)
-      std::memcpy((char*)bits + (size_t)y * f.w * 4, (const char*)bd.Scan0 + (size_t)(y0 + y) * bd.Stride + (size_t)x0 * 4,
-                  (size_t)f.w * 4);
-  }
+  f = cropToDib((const uint8_t*)bd.Scan0, (size_t)bd.Stride);
   canvas.UnlockBits(&bd);
   return f;
 }
@@ -283,6 +330,7 @@ SpriteFrame SpriteSet::mirror(const SpriteFrame& f) {
   SpriteFrame m = f;
   void* dst = nullptr;
   m.bmp = newDib(f.w, f.h, &dst);
+  m.id = ++serial_;
   if (!m.bmp) return f;
   DIBSECTION ds;
   GetObject(f.bmp, sizeof(ds), &ds);
@@ -293,19 +341,6 @@ SpriteFrame SpriteSet::mirror(const SpriteFrame& f) {
     for (int x = 0; x < f.w; ++x) d[(size_t)y * f.w + x] = s[(size_t)y * f.w + (f.w - 1 - x)];
   m.offX = cw_ - f.offX - f.w;
   return m;
-}
-
-void SpriteSet::evictExcept(Anim keep) {
-  // Idle and walk are shown most of the time; everything else is decoded on demand.
-  for (auto it = cache_.begin(); it != cache_.end();) {
-    int a = std::get<0>(it->first);
-    if (a != (int)Anim::Idle && a != (int)Anim::Walk && a != (int)keep) {
-      DeleteObject(it->second.bmp);
-      it = cache_.erase(it);
-    } else {
-      ++it;
-    }
-  }
 }
 
 SpriteFrame SpriteSet::get(Anim a, int variant, int index, bool mirrored) {
@@ -326,14 +361,25 @@ SpriteFrame SpriteSet::get(Anim a, int variant, int index, bool mirrored) {
     return m;
   }
   int ai = paths_[(int)a].empty() ? (int)Anim::Idle : (int)a;
-  if (ai != lastAnim_) {
-    evictExcept((Anim)ai);  // keep idle (common) and the current state only
-    lastAnim_ = ai;
-  }
   auto& vars = paths_[ai];
   int v = (int)((size_t)variant % vars.size());
   int i = (int)((size_t)index % vars[v].size());
   auto key = std::make_tuple(ai, v, i, mirrored);
+  // Idle and walk are on screen most of the time and stay decoded; any other state
+  // (reactions, random actions, sleep...) is decoded frame by frame and not kept.
+  if (stream_ || (ai != (int)Anim::Idle && ai != (int)Anim::Walk)) {
+    if (key == transientKey_ && transient_.bmp) return transient_;
+    SpriteFrame plain = decode(vars[v][i]);
+    SpriteFrame f = plain;
+    if (mirrored && plain.bmp) {
+      f = mirror(plain);
+      DeleteObject(plain.bmp);
+    }
+    if (transient_.bmp) DeleteObject(transient_.bmp);
+    transient_ = f;
+    transientKey_ = key;
+    return f;
+  }
   auto it = cache_.find(key);
   if (it != cache_.end()) return it->second;
   SpriteFrame f;

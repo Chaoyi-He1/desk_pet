@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <winhttp.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include "core/screen.h"
 #include "core/skin.h"
 #include "core/voice.h"
+#include "core/chat.h"
 #include "win/bubble.h"
 #include "win/resource.h"
 #include "win/sprites.h"
@@ -37,12 +39,14 @@ const wchar_t* kClass = L"BelfastPetWindow";
 const wchar_t* kMutex = L"Local\\BelfastPet.SingleInstance";
 const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t* kRunName = L"BelfastPet";
-const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3, ID_RESIZE = 4, ID_CHATTER = 5;
+const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3, ID_RESIZE = 4, ID_CHATTER = 5, ID_FADE = 6;
 const UINT WM_TRAY = WM_APP + 1;
+const UINT WM_CHAT_DONE = WM_APP + 2;  // lParam: ChatResult* from the worker thread
 const int kChatterChoices[] = {0, 10, 20, 30, 60};  // minutes; 0 = off
 enum {
   IDM_TOGGLE = 100, IDM_AUTOSTART, IDM_HIDE_FS, IDM_OPEN_ASSETS, IDM_EXIT,
   IDM_SIZE_UP, IDM_SIZE_DOWN, IDM_SIZE_RESET, IDM_CLICKTHROUGH,
+  IDM_RANDOM_SKIN, IDM_DAILY_RANDOM, IDM_CHAT, IDM_CHAT_SETTINGS,
   IDM_CHATTER_BASE = 300, IDM_SIZE_BASE = 400, IDM_SKIN_BASE = 1000  // + ship * 100 + skin
 };
 
@@ -70,6 +74,22 @@ struct App {
   pet::BrainConfig cfgBase;
   int height = 320, configHeight = 320;
   bool userHeight = false;
+  // Paintings (static, dynamic, Live2D) and chibis keep separate sizes: [0] painting, [1] chibi.
+  int heightK[2] = {320, 320};
+  bool userHeightK[2] = {false, false};
+  int kind = 0;
+  bool dailyRandom = false;
+  std::string lastDay;
+  // fade in / out (blyy-style), in SourceConstantAlpha steps
+  int alpha = 255, fadeDir = 0;
+  petwin::SpriteFrame cur;
+  int curX = 0, curY = 0;
+  uint64_t shownId = 0;
+  // chat
+  HWND chatWnd = nullptr, chatEdit = nullptr;
+  pet::ChatSession chat;
+  std::string chatKey;
+  bool chatBusy = false;
   int pendingWheel = 0;
   bool hideOnFullscreen = true, mirrorLeft = true, clickThrough = false;
   int bubbleMs = 3000, chatterMin = 20, savedX = -1;
@@ -78,7 +98,6 @@ struct App {
   ULONGLONG lastTick = 0, hiddenSince = 0;
   int timerMs = -1;
   bool userHidden = false, fsHidden = false;
-  HBITMAP shownBmp = nullptr;
   pet::Frame last;
   NOTIFYICONDATAW nid = {};
   HICON icon = nullptr;
@@ -158,7 +177,10 @@ void writeSettings(const App& app) {
   std::ofstream out(settingsFile().c_str(), std::ios::binary | std::ios::trunc);
   if (app.ship >= 0) out << "ship=" << narrow(app.ships[app.ship].key) << "\n";
   out << "skin=" << narrow(app.skin) << "\n";
-  if (app.userHeight) out << "height=" << app.height << "\n";
+  if (app.userHeightK[0]) out << "height=" << app.heightK[0] << "\n";
+  if (app.userHeightK[1]) out << "height_sd=" << app.heightK[1] << "\n";
+  out << "daily_random=" << (app.dailyRandom ? 1 : 0) << "\n";
+  out << "last_day=" << app.lastDay << "\n";
   out << "chatter=" << app.chatterMin << "\n";
   out << "clickthrough=" << (app.clickThrough ? 1 : 0) << "\n";
   if (app.brain) out << "x=" << app.last.x << "\n";
@@ -269,6 +291,33 @@ std::wstring skinPath(const App& app, int ship, const std::wstring& skin) {
   return app.shipsDir + L"\\" + app.ships[ship].key + L"\\skins\\" + skin;
 }
 
+// 0: painting (static PNG, dynamic painting, Live2D), 1: chibi.
+int kindOf(const App& app, int ship, const std::wstring& skin) {
+  std::wstring path = skinPath(app, ship, skin);
+  DWORD a = GetFileAttributesW(path.c_str());
+  if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) return 0;
+  pet::Ini meta = pet::Ini::parse(readFile(path + L"\\meta.ini"));
+  return meta.get("sequence", "kind", "chibi") == "painting" ? 0 : 1;
+}
+
+std::string today() {
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  char buf[16];
+  wsprintfA(buf, "%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
+  return buf;
+}
+
+std::pair<int, std::wstring> randomSkin(App& app, int ship, const std::wstring& skin) {
+  std::vector<std::pair<int, std::wstring>> all;
+  for (size_t si = 0; si < app.ships.size(); ++si)
+    for (const std::wstring& k : app.ships[si].skins)
+      if (!((int)si == ship && k == skin)) all.push_back({(int)si, k});
+  if (all.empty()) return {ship, skin};
+  std::uniform_int_distribution<size_t> d(0, all.size() - 1);
+  return all[d(app.rng)];
+}
+
 // The voice table a skin uses, and whether it is an oath (wedding) skin.
 std::string voiceSkin(const App& app, bool* oath) {
   const Ship& s = app.ships[app.ship];
@@ -294,31 +343,49 @@ void say(App& app, pet::Scene scene) {
 
 // ---------- rendering ----------
 
+// Pushes the current frame to the layered window at the current fade alpha.
+void present(App& app) {
+  if (!app.cur.bmp) return;
+  HDC screen = GetDC(nullptr);
+  HDC mem = CreateCompatibleDC(screen);
+  HGDIOBJ old = SelectObject(mem, app.cur.bmp);
+  POINT pos = {app.curX, app.curY}, src = {0, 0};
+  SIZE size = {app.cur.w, app.cur.h};
+  BLENDFUNCTION bf = {AC_SRC_OVER, 0, (BYTE)app.alpha, AC_SRC_ALPHA};
+  UpdateLayeredWindow(app.hwnd, screen, &pos, &size, mem, &src, 0, &bf, ULW_ALPHA);
+  SelectObject(mem, old);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+  app.shownId = app.cur.id;
+}
+
+void startFade(App& app, int dir) {
+  app.fadeDir = dir;
+  SetTimer(app.hwnd, ID_FADE, 40, nullptr);  // 5 steps of 51 alpha = 200 ms
+}
+
 void applyFrame(App& app, const pet::Frame& f) {
   if (!f.visible) {
-    ShowWindow(app.hwnd, SW_HIDE);
     app.bubble.hide();
-    app.shownBmp = nullptr;
+    if (IsWindowVisible(app.hwnd) && app.fadeDir >= 0) startFade(app, -1);
     return;
   }
   petwin::SpriteFrame sf = app.sprites->get(f.anim, f.variant, f.index, f.facingLeft && app.mirrorLeft);
   if (!sf.bmp) return;
   int wx = f.x + sf.offX, wy = f.y + sf.offY;
-  if (sf.bmp == app.shownBmp && IsWindowVisible(app.hwnd)) {
+  bool sameImage = sf.id == app.shownId;
+  app.cur = sf;
+  app.curX = wx;
+  app.curY = wy;
+  if (!IsWindowVisible(app.hwnd) || app.fadeDir < 0) {
+    if (!IsWindowVisible(app.hwnd)) app.alpha = 0;
+    present(app);
+    ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
+    startFade(app, +1);
+  } else if (sameImage) {
     SetWindowPos(app.hwnd, nullptr, wx, wy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
   } else {
-    HDC screen = GetDC(nullptr);
-    HDC mem = CreateCompatibleDC(screen);
-    HGDIOBJ old = SelectObject(mem, sf.bmp);
-    POINT pos = {wx, wy}, src = {0, 0};
-    SIZE size = {sf.w, sf.h};
-    BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    UpdateLayeredWindow(app.hwnd, screen, &pos, &size, mem, &src, 0, &bf, ULW_ALPHA);
-    SelectObject(mem, old);
-    DeleteDC(mem);
-    ReleaseDC(nullptr, screen);
-    app.shownBmp = sf.bmp;
-    if (!IsWindowVisible(app.hwnd)) ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
+    present(app);
   }
   app.bubble.moveTo(f.x + app.sprites->width() / 2, f.y + app.sprites->headTop());
 }
@@ -376,8 +443,12 @@ void applyChatterTimer(App& app) {
 // Loads skin `skin` of ship `ship` at the current size. The pet keeps its x position.
 bool loadSkin(App& app, int ship, const std::wstring& skin, std::wstring* err) {
   std::unique_ptr<petwin::SpriteSet> next(new petwin::SpriteSet());
-  if (!next->load(skinPath(app, ship, skin), app.height, app.userHeight, err)) return false;
-  app.height = next->size();
+  int kind = kindOf(app, ship, skin);
+  if (!next->load(skinPath(app, ship, skin), app.heightK[kind], app.userHeightK[kind], err)) return false;
+  app.kind = kind;
+  app.heightK[kind] = next->size();
+  app.height = app.heightK[kind];
+  app.userHeight = app.userHeightK[kind];
 
   int x = app.brain ? app.last.x : app.savedX;
   pet::BrainConfig cfg = app.cfgBase;
@@ -385,7 +456,9 @@ bool loadSkin(App& app, int ship, const std::wstring& skin, std::wstring* err) {
   cfg.spriteH = next->height();
   cfg.groundInset = next->groundInset();
   cfg.headFraction = next->headFraction();
-  cfg.canWalk = next->animated();  // a painting sliding across the desktop looks wrong
+  cfg.canWalk = next->animated() && next->walks();  // a painting sliding across the desktop looks wrong
+  if (next->idleMinMs() > 0) cfg.idleMinMs = next->idleMinMs();
+  if (next->idleMaxMs() > 0) cfg.idleMaxMs = next->idleMaxMs();
   for (int i = 0; i < (int)Anim::Count; ++i) {
     cfg.variants[i] = next->variants((Anim)i);
     if (next->fps() > 0) cfg.fps[i] = next->fps();  // chibi frames were rendered at one rate
@@ -398,7 +471,8 @@ bool loadSkin(App& app, int ship, const std::wstring& skin, std::wstring* err) {
   app.brain.reset(new pet::Brain(cfg, (unsigned)GetTickCount()));
   app.ship = ship;
   app.skin = skin;
-  app.shownBmp = nullptr;
+  app.shownId = 0;
+  app.cur = petwin::SpriteFrame();
   if (app.hwnd) {
     RECT work = workArea(app.hwnd);
     app.brain->setWorkTop(work.top);
@@ -416,18 +490,193 @@ bool loadSkin(App& app, int ship, const std::wstring& skin, std::wstring* err) {
 void applyHeight(App& app, int height) {
   RECT work = workArea(app.hwnd);
   int h = pet::clampHeightToScreen(height, work.bottom - work.top);
-  if (h == app.height && app.userHeight) return;
-  int prev = app.height;
-  bool prevUser = app.userHeight;
-  app.height = h;
-  app.userHeight = true;
+  int k = app.kind;
+  if (h == app.heightK[k] && app.userHeightK[k]) return;
+  int prev = app.heightK[k];
+  bool prevUser = app.userHeightK[k];
+  app.heightK[k] = h;
+  app.userHeightK[k] = true;
   std::wstring err;
   if (!loadSkin(app, app.ship, app.skin, &err)) {
-    app.height = prev;
-    app.userHeight = prevUser;
+    app.heightK[k] = prev;
+    app.userHeightK[k] = prevUser;
     return;
   }
   writeSettings(app);
+}
+
+// ---------- chat (optional; any OpenAI-compatible endpoint, key in chat.ini) ----------
+
+struct ChatResult {
+  std::string user, body;  // body: HTTP response text
+  std::string netError;
+};
+
+std::wstring chatIniPath() { return userDataDir() + L"\\chat.ini"; }
+pet::ChatConfig chatConfig() { return pet::ChatConfig::parse(readFile(chatIniPath())); }
+
+void openChatSettings() {
+  std::wstring p = chatIniPath();
+  if (readFile(p).empty()) {
+    std::ofstream out(p.c_str(), std::ios::binary);
+    out << "\xEF\xBB\xBF" << pet::chatIniTemplate();  // BOM so Notepad keeps it UTF-8
+  }
+  ShellExecuteW(nullptr, L"open", p.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+struct ChatJob {
+  HWND notify;
+  std::wstring url;
+  std::string key, body, user;
+};
+
+DWORD WINAPI chatThread(LPVOID param) {
+  std::unique_ptr<ChatJob> job((ChatJob*)param);
+  ChatResult* res = new ChatResult();
+  res->user = job->user;
+  URL_COMPONENTS uc = {};
+  uc.dwStructSize = sizeof(uc);
+  wchar_t host[256] = {}, path[2048] = {};
+  uc.lpszHostName = host;
+  uc.dwHostNameLength = 256;
+  uc.lpszUrlPath = path;
+  uc.dwUrlPathLength = 2048;
+  HINTERNET ses = nullptr, con = nullptr, req = nullptr;
+  if (!WinHttpCrackUrl(job->url.c_str(), 0, 0, &uc)) {
+    res->netError = "base_url 无效";
+  } else {
+    ses = WinHttpOpen(L"BelfastPet/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (ses) WinHttpSetTimeouts(ses, 10000, 10000, 60000, 60000);
+    con = ses ? WinHttpConnect(ses, host, uc.nPort, 0) : nullptr;
+    req = con ? WinHttpOpenRequest(con, L"POST", path, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                   uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
+              : nullptr;
+    std::wstring headers = L"Content-Type: application/json\r\nAuthorization: Bearer " + widen(job->key) + L"\r\n";
+    bool ok = req && WinHttpSendRequest(req, headers.c_str(), (DWORD)-1L, (LPVOID)job->body.data(), (DWORD)job->body.size(),
+                                        (DWORD)job->body.size(), 0) &&
+              WinHttpReceiveResponse(req, nullptr);
+    if (!ok) {
+      res->netError = "连接失败（错误 " + std::to_string(GetLastError()) + "）";
+    } else {
+      DWORD avail = 0;
+      while (WinHttpQueryDataAvailable(req, &avail) && avail) {
+        std::string chunk(avail, '\0');
+        DWORD got = 0;
+        if (!WinHttpReadData(req, &chunk[0], avail, &got) || got == 0) break;
+        res->body.append(chunk.data(), got);
+      }
+    }
+  }
+  if (req) WinHttpCloseHandle(req);
+  if (con) WinHttpCloseHandle(con);
+  if (ses) WinHttpCloseHandle(ses);
+  if (!PostMessageW(job->notify, WM_CHAT_DONE, 0, (LPARAM)res)) delete res;
+  return 0;
+}
+
+void showChatBubble(App& app, const std::string& text) {
+  app.bubble.show(widen(text), app.last.x + app.sprites->width() / 2, app.last.y + app.sprites->headTop(),
+                  pet::bubbleDurationMs(text, app.bubbleMs) + 2000);
+}
+
+void prepareChatSession(App& app) {
+  std::string key = narrow(app.ships[app.ship].key + L"/" + app.skin);
+  if (key == app.chatKey) return;
+  app.chatKey = key;
+  bool oath = false;
+  std::string vskin = voiceSkin(app, &oath);
+  std::string fallback = app.ships[app.ship].ini.get("ship", "default_voice", "01");
+  pet::ChatConfig cc = chatConfig();
+  std::vector<std::string> samples = app.voices.samples(vskin, fallback, 8, oath, app.rng);
+  app.chat.reset(pet::chatSystemPrompt(narrow(app.ships[app.ship].name), pet::skinOutfitName(narrow(app.skin)), samples,
+                                       cc.maxReplyChars));
+}
+
+void sendChat(App& app, const std::wstring& text) {
+  pet::ChatConfig cc = chatConfig();
+  if (app.chatBusy || !cc.ready() || text.empty()) return;
+  prepareChatSession(app);
+  ChatJob* job = new ChatJob();
+  job->notify = app.hwnd;
+  job->url = widen(cc.endpoint());
+  job->key = cc.apiKey;
+  job->user = narrow(text);
+  job->body = app.chat.requestBody(cc, job->user);
+  HANDLE th = CreateThread(nullptr, 0, chatThread, job, 0, nullptr);
+  if (!th) {
+    delete job;
+    return;
+  }
+  CloseHandle(th);
+  app.chatBusy = true;
+  if (app.chatEdit) EnableWindow(app.chatEdit, FALSE);
+  showChatBubble(app, "……");
+}
+
+WNDPROC g_editProc = nullptr;
+
+LRESULT CALLBACK chatEditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_KEYDOWN && wp == VK_RETURN) {
+    wchar_t buf[1024];
+    GetWindowTextW(h, buf, 1024);
+    SetWindowTextW(h, L"");
+    if (g_app) sendChat(*g_app, buf);
+    return 0;
+  }
+  if (msg == WM_KEYDOWN && wp == VK_ESCAPE) {
+    ShowWindow(GetParent(h), SW_HIDE);
+    return 0;
+  }
+  if (msg == WM_CHAR && (wp == VK_RETURN || wp == VK_ESCAPE)) return 0;  // no beep
+  return CallWindowProcW(g_editProc, h, msg, wp, lp);
+}
+
+LRESULT CALLBACK chatWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_CLOSE) {
+    ShowWindow(h, SW_HIDE);
+    return 0;
+  }
+  if (msg == WM_ACTIVATE && LOWORD(wp) != WA_INACTIVE && g_app && g_app->chatEdit) SetFocus(g_app->chatEdit);
+  return DefWindowProcW(h, msg, wp, lp);
+}
+
+void openChat(App& app) {
+  if (!chatConfig().ready()) {
+    openChatSettings();
+    return;
+  }
+  if (!app.chatWnd) {
+    WNDCLASSW wc = {};
+    wc.lpfnWndProc = chatWndProc;
+    wc.hInstance = app.hinst;
+    wc.lpszClassName = L"BelfastPetChat";
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    RegisterClassW(&wc);
+    RECT r = {0, 0, 340, 36};
+    AdjustWindowRectEx(&r, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW | WS_EX_TOPMOST);
+    app.chatWnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, wc.lpszClassName, L"和她聊天", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                                  0, 0, r.right - r.left, r.bottom - r.top, nullptr, nullptr, app.hinst, nullptr);
+    app.chatEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 6, 6, 328, 24,
+                                   app.chatWnd, nullptr, app.hinst, nullptr);
+    HFONT font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+    SendMessageW(app.chatEdit, WM_SETFONT, (WPARAM)font, TRUE);
+    SendMessageW(app.chatEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"说点什么，回车发送");
+    g_editProc = (WNDPROC)SetWindowLongPtrW(app.chatEdit, GWLP_WNDPROC, (LONG_PTR)chatEditProc);
+  }
+  RECT wr;
+  GetWindowRect(app.chatWnd, &wr);
+  int w = wr.right - wr.left, h = wr.bottom - wr.top;
+  RECT work = workArea(app.hwnd);
+  int x = app.last.x + app.sprites->width() / 2 - w / 2;
+  int y = app.last.y + app.sprites->height() + 6;           // just below her
+  if (y + h > work.bottom) y = app.last.y + app.sprites->headTop() - h - 70;  // or above the bubble
+  x = (std::max)((int)work.left, (std::min)(x, (int)work.right - w));
+  y = (std::max)((int)work.top, y);
+  SetWindowPos(app.chatWnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
+  SetForegroundWindow(app.chatWnd);
+  SetFocus(app.chatEdit);
 }
 
 // ---------- menu / tray ----------
@@ -448,6 +697,9 @@ void showMenu(App& app) {
     AppendMenuW(skinMenu, MF_POPUP | ((int)si == app.ship ? MF_CHECKED : 0), (UINT_PTR)sub, s.name.c_str());
   }
   if (app.ships.empty()) AppendMenuW(skinMenu, MF_STRING | MF_GRAYED, 0, L"(assets\\ships 里没有形象)");
+  AppendMenuW(skinMenu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(skinMenu, MF_STRING, IDM_RANDOM_SKIN, L"随机换一套(&R)");
+  AppendMenuW(skinMenu, MF_STRING | (app.dailyRandom ? MF_CHECKED : 0), IDM_DAILY_RANDOM, L"每天随机换装(&D)");
   AppendMenuW(m, MF_POPUP, (UINT_PTR)skinMenu, L"切换形象(&K)");
 
   HMENU sizeMenu = CreatePopupMenu();
@@ -476,6 +728,9 @@ void showMenu(App& app) {
   }
   AppendMenuW(m, MF_POPUP, (UINT_PTR)chatMenu, L"自动说话(&T)");
 
+  AppendMenuW(m, MF_STRING, IDM_CHAT, chatConfig().ready() ? L"和她聊天…(&C)" : L"和她聊天（需先填写 API Key）…(&C)");
+  AppendMenuW(m, MF_STRING, IDM_CHAT_SETTINGS, L"聊天设置…(&G)");
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING | (app.clickThrough ? MF_CHECKED : 0), IDM_CLICKTHROUGH, L"鼠标穿透（用托盘图标关闭）(&P)");
   AppendMenuW(m, MF_STRING | (app.hideOnFullscreen ? MF_CHECKED : 0), IDM_HIDE_FS, L"全屏时自动隐藏(&F)");
   AppendMenuW(m, MF_STRING | (autostartEnabled() ? MF_CHECKED : 0), IDM_AUTOSTART, L"开机自动启动(&A)");
@@ -515,13 +770,32 @@ void showMenu(App& app) {
       applyHeight(app, pet::stepHeight(app.height, -1));
       break;
     case IDM_SIZE_RESET: {
-      app.userHeight = false;
-      app.height = app.configHeight;
+      app.userHeightK[app.kind] = false;
+      app.heightK[app.kind] = app.configHeight;
       std::wstring err;
       loadSkin(app, app.ship, app.skin, &err);
       writeSettings(app);
       break;
     }
+    case IDM_RANDOM_SKIN: {
+      std::pair<int, std::wstring> r = randomSkin(app, app.ship, app.skin);
+      std::wstring err;
+      if (loadSkin(app, r.first, r.second, &err)) {
+        writeSettings(app);
+        say(app, pet::Scene::Login);
+      }
+      break;
+    }
+    case IDM_DAILY_RANDOM:
+      app.dailyRandom = !app.dailyRandom;
+      writeSettings(app);
+      break;
+    case IDM_CHAT:
+      openChat(app);
+      break;
+    case IDM_CHAT_SETTINGS:
+      openChatSettings();
+      break;
     case IDM_EXIT:
       DestroyWindow(app.hwnd);
       break;
@@ -583,6 +857,20 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
           app->brain->release();
         }
         step(*app, 0);
+      } else if (wp == ID_FADE) {
+        app->alpha = (std::max)(0, (std::min)(255, app->alpha + app->fadeDir * 51));
+        if (app->alpha == 0 && app->fadeDir < 0) {
+          KillTimer(h, ID_FADE);
+          app->fadeDir = 0;
+          ShowWindow(h, SW_HIDE);
+          app->shownId = 0;
+        } else {
+          present(*app);
+          if ((app->alpha == 255 && app->fadeDir > 0) || app->fadeDir == 0) {
+            KillTimer(h, ID_FADE);
+            app->fadeDir = 0;
+          }
+        }
       } else if (wp == ID_RESIZE) {
         KillTimer(h, ID_RESIZE);
         int notches = app->pendingWheel;
@@ -641,6 +929,26 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_MOUSEACTIVATE:
       return MA_NOACTIVATE;
+    case WM_CHAT_DONE: {
+      std::unique_ptr<ChatResult> res((ChatResult*)lp);
+      app->chatBusy = false;
+      if (app->chatEdit) {
+        EnableWindow(app->chatEdit, TRUE);
+        if (IsWindowVisible(app->chatWnd)) SetFocus(app->chatEdit);
+      }
+      pet::ChatConfig cc = chatConfig();
+      std::string reply, why;
+      if (!res->netError.empty()) {
+        showChatBubble(*app, "（" + res->netError + "）");
+      } else if (pet::parseChatReply(res->body, &reply, &why)) {
+        reply = pet::clipReply(reply, cc.maxReplyChars + 20);
+        app->chat.accept(res->user, reply, cc.maxTurns);
+        showChatBubble(*app, reply);
+      } else {
+        showChatBubble(*app, "（" + why + "）");
+      }
+      return 0;
+    }
     case WM_DESTROY:
       writeSettings(*app);
       Shell_NotifyIconW(NIM_DELETE, &app->nid);
@@ -686,10 +994,13 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   app.fallbackVoices = pet::VoiceBank::parsePlain(readFile(app.assetsDir + L"\\lines.txt"));
 
   pet::Ini saved = pet::Ini::parse(readFile(settingsFile()));
-  if (saved.has("", "height")) {
-    app.height = pet::clampHeight(saved.getInt("", "height", app.configHeight));
-    app.userHeight = true;
+  app.heightK[0] = app.heightK[1] = app.configHeight;
+  if (saved.has("", "height_sd")) {
+    app.heightK[1] = pet::clampHeight(saved.getInt("", "height_sd", app.configHeight));
+    app.userHeightK[1] = true;
   }
+  app.dailyRandom = saved.getInt("", "daily_random", 0) != 0;
+  app.lastDay = saved.get("", "last_day", "");
   app.chatterMin = saved.getInt("", "chatter", app.chatterMin);
   app.clickThrough = saved.getInt("", "clickthrough", 0) != 0;
   app.savedX = saved.getInt("", "x", app.savedX);
@@ -707,6 +1018,17 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   if (ship < 0) ship = 0;
   const Ship& s = app.ships[ship];
   if (std::find(s.skins.begin(), s.skins.end(), skin) == s.skins.end()) skin = s.skins.front();
+  if (saved.has("", "height")) {  // older settings had one size: it belonged to the kind shown then
+    int k = saved.has("", "height_sd") ? 0 : kindOf(app, ship, skin);
+    app.heightK[k] = pet::clampHeight(saved.getInt("", "height", app.configHeight));
+    app.userHeightK[k] = true;
+  }
+  if (app.dailyRandom && app.lastDay != today()) {  // 每天随机换装
+    std::pair<int, std::wstring> r = randomSkin(app, ship, skin);
+    ship = r.first;
+    skin = r.second;
+  }
+  app.lastDay = today();
 
   WNDCLASSW wc = {};
   wc.lpfnWndProc = wndProc;

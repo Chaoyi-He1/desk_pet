@@ -36,6 +36,11 @@ public:
   std::string pick(const std::string& skin, const std::string& fallbackSkin, const std::vector<std::string>& keys,
                    bool oathOk, std::mt19937& rng);
 
+  // Up to n distinct lines of `skin` (else `fallbackSkin`) for everyday scenes, as style
+  // examples; oath lines only when `oathOk`.
+  std::vector<std::string> samples(const std::string& skin, const std::string& fallbackSkin, size_t n, bool oathOk,
+                                   std::mt19937& rng) const;
+
 private:
   std::vector<Line> lines_;
   std::string last_;

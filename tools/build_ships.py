@@ -7,6 +7,8 @@ For each ship:
   ship.ini                  display name, default voice table, oath skins
   skins/<num>-<name>.png    painting, cropped to the character and scaled to <= 1200 px tall
   skins/Q版-<num>-<name>/   chibi frame sequences + meta.ini (tools/spine/render38.py)
+  skins/动态-<num>-<name>/  dynamic painting frames (assets/official/dynamic/, tools/spine export_painting)
+  skins/L2D-<num>-<name>/   Live2D frames (assets/official/l2d_skins/, tools/live2d)
   voices.tsv                official lines from the wiki: skin num, key, index, oath, zh, jp
 Sources: assets/official/*.png (tools/fetch_paintings.py) and
 assets/official/game/unpacked/char/ (tools/extract_from_device.py). Everything written
@@ -28,6 +30,11 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, os.path.join(ROOT, "tools", "spine"))
 OFFICIAL = os.path.join(ROOT, "assets", "official")
 CHAR = os.path.join(OFFICIAL, "game", "unpacked", "char")
+DYN = os.path.join(OFFICIAL, "dynamic")
+L2D = os.path.join(OFFICIAL, "l2d_skins")
+# Animated paintings stand still, are sized by their picture height, and play their long
+# main-screen motions only now and then.
+PAINTING_META = {"kind": "painting", "walk": "0", "size_ratio": "1.0", "idle_min_ms": "30000", "idle_max_ms": "60000"}
 OUT = os.path.join(ROOT, "assets", "ships")
 MAX_H = 1200
 CHAR_PX = 480  # idle chibi height in exported pixels: ~1:1 on a Retina screen at the default size
@@ -74,12 +81,27 @@ def build_sd(model, dst):
     return model, w, h, lines
 
 
+def copy_animated(src, dst):
+    """Copy a prepared frame-sequence folder and make sure its meta.ini marks it as a painting."""
+    import shutil
+    shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("_*", ".*"))
+    meta_path = os.path.join(dst, "meta.ini")
+    lines = open(meta_path, encoding="utf-8").read().splitlines()
+    keys = {l.split("=", 1)[0].strip() for l in lines if "=" in l}
+    lines += [f"{k}={v}" for k, v in PAINTING_META.items() if k not in keys]
+    open(meta_path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    import make_bpf  # big painting frames are streamed by the app: use the fast frame format
+    make_bpf.convert_skin(dst)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ship", action="append", help="only these ships (repeatable)")
     ap.add_argument("--no-paint", action="store_true")
     ap.add_argument("--no-sd", action="store_true")
     ap.add_argument("--no-voice", action="store_true")
+    ap.add_argument("--only-animated", action="store_true", help="only copy dynamic-painting and Live2D skins")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2))
     a = ap.parse_args()
     ships = {k: v for k, v in json.load(open(os.path.join(ROOT, "tools", "ships.json"), encoding="utf-8")).items()
@@ -100,13 +122,23 @@ def main():
                     f.write(f"voice_{s['num']}={s['voice']}\n")
         for s in ship["skins"]:
             label = f"{s['num']}-{safe(s['name'])}"
-            if not a.no_paint and s.get("painting"):
+            if not a.no_paint and not a.only_animated and s.get("painting"):
                 src = os.path.join(OFFICIAL, s["painting"])
                 if os.path.exists(src):
                     size = build_painting(src, os.path.join(skins_dir, label + ".png"))
                     print(f"{key:9s} painting {label:28s} {size[0]}x{size[1]}")
                 else:
                     print(f"{key:9s} painting {label:28s} MISSING {s['painting']} (run tools/fetch_paintings.py)")
+            for key_name, root, prefix in (("dyn", DYN, "动态-"), ("l2d", L2D, "L2D-")):
+                if s.get(key_name) and not a.no_sd:
+                    src = os.path.join(root, s[key_name])
+                    if os.path.isfile(os.path.join(src, "meta.ini")):
+                        copy_animated(src, os.path.join(skins_dir, prefix + label))
+                        print(f"{key:9s} {key_name:8s} {label:28s} <- {s[key_name]}")
+                    else:
+                        print(f"{key:9s} {key_name:8s} {label:28s} MISSING {src}")
+            if a.only_animated:
+                continue
             if not a.no_sd and s.get("sd"):
                 if os.path.isdir(os.path.join(CHAR, s["sd"])):
                     sd_jobs.append((key, s["sd"], os.path.join(skins_dir, "Q版-" + label)))

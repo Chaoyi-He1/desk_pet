@@ -1,0 +1,99 @@
+<!doctype html>
+<!-- Offline Live2D frame renderer for BelfastPet (see tools/live2d/README in the main README).
+     Loads a model with the official Cubism Core + pixi-live2d-display, steps motions and
+     physics at a fixed rate, and POSTs every frame to tools/live2d/server.py. -->
+<html><head><meta charset="utf-8"><title>L2D render</title>
+<style>body{margin:0;background:#445;color:#eee;font:12px sans-serif} canvas{width:512px;height:512px;background:#6a6}</style>
+<script src="vendor/live2dcubismcore.min.js"></script>
+<script src="vendor/pixi.min.js"></script>
+<script src="vendor/cubism4.min.js"></script>
+</head><body><div id="status">loading…</div>
+<script>
+const status = (s) => { document.getElementById('status').textContent = s; fetch('/log', {method: 'POST', body: s}); };
+const jobs = JSON.parse(decodeURIComponent(new URLSearchParams(location.search).get('jobs')));
+const SIZE = 2048;
+
+async function renderJob(app, job) {
+  const model = await PIXI.live2d.Live2DModel.from(job.model, {autoInteract: false, autoUpdate: false});
+  const im = model.internalModel;
+  if (im.breath) im.breath.setParameters([]);  // keep loops exact: only the game's own motions move her
+  if (im.eyeBlink) im.eyeBlink = undefined;
+  const cm = im.coreModel, core = cm.getModel();
+  const partIds = Array.from(core.parts.ids), partParents = Array.from(core.parts.parentIndices);
+  const baseOpacity = partIds.map((_, i) => cm.getPartOpacityByIndex(i));
+  // Parts to hide (background, stage props...): forced to zero right before every core update.
+  // (pixi-live2d-display 0.4 has no beforeModelUpdate event, so wrap coreModel.update.)
+  let hidden = new Set((job.hideParts || []).map((id) => partIds.indexOf(id)).filter((i) => i >= 0));
+  let lastHidden = new Set();
+  const coreUpdate = cm.update.bind(cm);
+  cm.update = () => {
+    for (const i of lastHidden) if (!hidden.has(i)) cm.setPartOpacityByIndex(i, baseOpacity[i]);
+    for (const i of hidden) cm.setPartOpacityByIndex(i, 0);
+    lastHidden = new Set(hidden);
+    coreUpdate();
+  };
+  const w = model.width, h = model.height;
+  const k = Math.min((SIZE * 0.96) / w, (SIZE * 0.96) / h);
+  model.scale.set(k);
+  model.anchor.set(0.5, 0.5);
+  model.position.set(SIZE / 2, SIZE / 2);
+  app.stage.removeChildren();
+  app.stage.addChild(model);
+  const dt = 1000 / job.fps;
+  const step = () => { model.update(dt); app.renderer.render(app.stage); };
+  const save = async (file) => {
+    const blob = await new Promise((r) => app.view.toBlob(r, 'image/png'));
+    await fetch('/save?file=' + encodeURIComponent(file), {method: 'POST', body: blob});
+  };
+  const play = async (name) => {
+    await model.motion(name, 0, PIXI.live2d.MotionPriority.FORCE);
+  };
+  if (job.census) {
+    // One frame per top-level part (everything else hidden), to decide what is background.
+    await play(job.idle.motion);
+    for (let i = 0; i < 8; i++) step();
+    const tops = partIds.map((id, i) => i).filter((i) => partParents[i] < 0);
+    for (const t of tops) {
+      hidden = new Set(tops.filter((x) => x !== t));
+      step();
+      await save(`${job.out}/census/${partIds[t]}.png`);
+    }
+    hidden = new Set();
+    step();
+    await save(`${job.out}/census/_all.png`);
+    status(`${job.out} census ${tops.length} top-level parts`);
+    model.destroy();
+    return;
+  }
+  // Warm up physics on the idle loop so captured frames start from a settled pose.
+  await play(job.idle.motion);
+  for (let i = 0; i < Math.round(job.idle.duration * job.fps); i++) step();
+  for (const st of job.states) {
+    await play(st.motion);
+    const n = Math.max(1, Math.round(st.duration * job.fps));
+    for (let i = 0; i < n; i++) {
+      step();
+      await save(`${job.out}/${st.state}/${String(i).padStart(3, '0')}.png`);
+      if (i % 10 === 0) status(`${job.out} ${st.state} ${i}/${n}`);
+    }
+    if (st.state === 'idle') continue;
+    await play(job.idle.motion);  // return to idle before the next one-shot
+    for (let i = 0; i < Math.round(job.fps); i++) step();
+  }
+  status(`${job.out} done`);
+  model.destroy();
+}
+
+(async () => {
+  try {
+    const app = new PIXI.Application({width: SIZE, height: SIZE, backgroundAlpha: 0, preserveDrawingBuffer: true,
+                                      autoStart: false, antialias: true, premultipliedAlpha: true});
+    app.ticker.stop();
+    document.body.appendChild(app.view);
+    for (const job of jobs) await renderJob(app, job);
+    status('ALL DONE');
+  } catch (e) {
+    status('ERROR ' + (e && e.stack || e));
+  }
+})();
+</script></body></html>
