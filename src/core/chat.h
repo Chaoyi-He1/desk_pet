@@ -1,6 +1,7 @@
-// Optional "chat with the ship" feature (like blyy's 啾信): talks to any OpenAI-compatible
-// chat-completions endpoint the user configures. Platform independent: builds the request
-// body and parses the reply; the shells do the HTTP.
+// Optional "chat with the ship" feature (like blyy's 啾信): talks to an OpenAI-style endpoint
+// the user configures, either chat/completions or the Responses API (e.g. ByteDance ModelHub,
+// which also takes its key as a ?ak= query parameter). Platform independent: builds the URL,
+// the request body and parses the reply; the shells do the HTTP.
 #pragma once
 #include <string>
 #include <vector>
@@ -8,16 +9,26 @@
 namespace pet {
 
 struct ChatConfig {
-  std::string baseUrl = "https://api.openai.com/v1";  // ".../chat/completions" is appended
+  std::string baseUrl = "https://api.openai.com/v1";  // "/chat/completions" or "/responses" is appended
   std::string apiKey;
   std::string model = "gpt-4o-mini";
+  bool responsesApi = false;   // api=responses: POST /responses (input/output) instead of chat/completions
+  bool keyInQuery = false;     // auth=ak: the key goes in "?ak=" (ModelHub) instead of "Authorization: Bearer"
+  std::string reasoningEffort; // reasoning_effort=low|medium|high (Responses API only); empty: not sent
   int maxTurns = 8;          // user+assistant pairs kept as context
   int maxReplyChars = 80;    // asked of the model; replies are also clipped for the bubble
-  double temperature = 0.8;
+  double temperature = 0.8;  // chat/completions only (reasoning models reject it)
   bool ready() const { return !apiKey.empty() && !baseUrl.empty() && !model.empty(); }
-  // chat.ini: [chat] base_url, api_key, model, max_turns, max_reply_chars, temperature
+  // chat.ini: [chat] base_url, api_key, model, api, auth, reasoning_effort, max_turns,
+  // max_reply_chars, temperature
   static ChatConfig parse(const std::string& iniText);
+  // URL without credentials: base_url + "/chat/completions" or "/responses" (a base_url that
+  // already ends in "/responses" or ModelHub's "/v2/crawl" is taken as its channel root).
   std::string endpoint() const;
+  // What to request: endpoint(), plus "?ak=<key>" when keyInQuery.
+  std::string requestUrl() const;
+  // Value of the Authorization header, or "" when the key travels in the URL.
+  std::string authorization() const;
 };
 
 // Template written to chat.ini when the user opens the chat settings for the first time.
@@ -44,8 +55,9 @@ private:
   std::vector<std::string> history_;  // user, assistant, user, assistant, ...
 };
 
-// Extracts choices[0].message.content from a chat-completions response. On failure returns
-// false and puts a short reason (API error message if present) into *err.
+// Extracts the reply text: choices[0].message.content (chat/completions), or output_text /
+// the output_text parts of output[] messages (Responses API). On failure returns false and
+// puts a short reason (API error message if present) into *err.
 bool parseChatReply(const std::string& json, std::string* reply, std::string* err);
 
 // Trims whitespace and clips to at most maxChars code points (adding "…").

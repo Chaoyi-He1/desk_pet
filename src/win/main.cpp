@@ -529,8 +529,10 @@ void openChatSettings() {
 
 struct ChatJob {
   HWND notify;
-  std::wstring url;
-  std::string key, body, user;
+  std::wstring url;   // may carry the key as ?ak=
+  std::string auth;   // Authorization header value, "" when the key is in the URL
+  std::string body, user;
+  int timeoutMs = 60000;
 };
 
 DWORD WINAPI chatThread(LPVOID param) {
@@ -539,22 +541,26 @@ DWORD WINAPI chatThread(LPVOID param) {
   res->user = job->user;
   URL_COMPONENTS uc = {};
   uc.dwStructSize = sizeof(uc);
-  wchar_t host[256] = {}, path[2048] = {};
+  wchar_t host[256] = {}, path[2048] = {}, extra[2048] = {};
   uc.lpszHostName = host;
   uc.dwHostNameLength = 256;
   uc.lpszUrlPath = path;
   uc.dwUrlPathLength = 2048;
+  uc.lpszExtraInfo = extra;  // the query string (ModelHub's ?ak=) comes back separately
+  uc.dwExtraInfoLength = 2048;
   HINTERNET ses = nullptr, con = nullptr, req = nullptr;
   if (!WinHttpCrackUrl(job->url.c_str(), 0, 0, &uc)) {
     res->netError = "base_url 无效";
   } else {
     ses = WinHttpOpen(L"BelfastPet/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (ses) WinHttpSetTimeouts(ses, 10000, 10000, 60000, 60000);
+    if (ses) WinHttpSetTimeouts(ses, 10000, 10000, job->timeoutMs, job->timeoutMs);
     con = ses ? WinHttpConnect(ses, host, uc.nPort, 0) : nullptr;
-    req = con ? WinHttpOpenRequest(con, L"POST", path, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+    std::wstring object = std::wstring(path) + extra;
+    req = con ? WinHttpOpenRequest(con, L"POST", object.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                    uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
               : nullptr;
-    std::wstring headers = L"Content-Type: application/json\r\nAuthorization: Bearer " + widen(job->key) + L"\r\n";
+    std::wstring headers = L"Content-Type: application/json\r\n";
+    if (!job->auth.empty()) headers += L"Authorization: " + widen(job->auth) + L"\r\n";
     bool ok = req && WinHttpSendRequest(req, headers.c_str(), (DWORD)-1L, (LPVOID)job->body.data(), (DWORD)job->body.size(),
                                         (DWORD)job->body.size(), 0) &&
               WinHttpReceiveResponse(req, nullptr);
@@ -601,8 +607,9 @@ void sendChat(App& app, const std::wstring& text) {
   prepareChatSession(app);
   ChatJob* job = new ChatJob();
   job->notify = app.hwnd;
-  job->url = widen(cc.endpoint());
-  job->key = cc.apiKey;
+  job->url = widen(cc.requestUrl());
+  job->auth = cc.authorization();
+  job->timeoutMs = cc.reasoningEffort.empty() ? 60000 : 120000;  // reasoning models think first
   job->user = narrow(text);
   job->body = app.chat.requestBody(cc, job->user);
   HANDLE th = CreateThread(nullptr, 0, chatThread, job, 0, nullptr);

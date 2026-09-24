@@ -47,6 +47,7 @@ Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测过占用�
 右键「聊天设置…」会打开 `chat.ini`（Windows 在 `%APPDATA%\BelfastPet\`，macOS 在 `~/Library/Application Support/BelfastPet/`）。填上 `api_key`，需要的话改 `base_url` 和 `model`，就能用右键「和她聊天…」打字聊天，回复显示在气泡里。
 
 - 支持任何兼容 OpenAI `chat/completions` 接口的服务，例如 OpenAI、DeepSeek、通义千问、本地的 Ollama。
+- 也支持 Responses API：加 `api=responses`；用 `?ak=` 传 key 的服务（例如字节 ModelHub）再加 `auth=ak`；推理模型可以用 `reasoning_effort=low/medium/high` 调推理强度。
 - 她会以当前角色的身份和口吻回答，提示词里附带了几句她的官方台词做语气参考，并知道自己穿的是哪套衣服。
 - 保留最近 8 轮对话作为上下文，换形象后重新开始。
 - 聊天内容只发往你填写的地址。不填 `api_key` 则这个功能完全不联网。

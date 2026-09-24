@@ -568,6 +568,63 @@ TEST(chat_config_and_endpoint) {
   CHECK(!ChatConfig::parse(chatIniTemplate()).ready());  // template ships without a key
 }
 
+TEST(chat_modelhub_responses_config) {
+  ChatConfig c = ChatConfig::parse(
+      "[chat]\nbase_url=https://aidp.example.net/api/modelhub/online/\napi_key=k+1/2\nmodel=gpt-6-astra\n"
+      "api=responses\nauth=ak\nreasoning_effort=medium\n");
+  CHECK(c.ready() && c.responsesApi && c.keyInQuery);
+  CHECK(c.reasoningEffort == "medium");
+  CHECK(c.endpoint() == "https://aidp.example.net/api/modelhub/online/responses");
+  CHECK(c.requestUrl() == "https://aidp.example.net/api/modelhub/online/responses?ak=k%2B1%2F2");
+  CHECK(c.authorization().empty());  // the key is never sent twice
+  // a base copied with a dialect suffix is taken as the channel root
+  CHECK(ChatConfig::parse("[chat]\nbase_url=https://h/x/responses\napi=responses\n").endpoint() == "https://h/x/responses");
+  CHECK(ChatConfig::parse("[chat]\nbase_url=https://h/x/v2/crawl\napi=responses\n").endpoint() == "https://h/x/responses");
+  ChatConfig d = ChatConfig::parse("[chat]\nbase_url=https://api.deepseek.com/v1\napi_key=sk-x\n");
+  CHECK(!d.responsesApi && !d.keyInQuery && d.reasoningEffort.empty());
+  CHECK(d.requestUrl() == "https://api.deepseek.com/v1/chat/completions");
+  CHECK(d.authorization() == "Bearer sk-x");
+}
+
+TEST(chat_responses_request_body) {
+  ChatConfig c;
+  c.model = "gpt-6-astra";
+  c.responsesApi = true;
+  c.reasoningEffort = "medium";
+  ChatSession s;
+  s.reset("你是贝尔法斯特");
+  s.accept("早", "早安，指挥官", 8);
+  std::string b = s.requestBody(c, "红茶");
+  CHECK(b.find("\"model\":\"gpt-6-astra\"") != std::string::npos);
+  CHECK(b.find("\"input\":[{\"role\":\"system\",\"content\":[{\"type\":\"input_text\",\"text\":\"你是贝尔法斯特\"}]}") !=
+        std::string::npos);
+  CHECK(b.find("{\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"早安，指挥官\"}]}") !=
+        std::string::npos);
+  CHECK(b.find("{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"红茶\"}]}]") != std::string::npos);
+  CHECK(b.find("\"reasoning\":{\"effort\":\"medium\"}") != std::string::npos);
+  CHECK(b.find("temperature") == std::string::npos && b.find("messages") == std::string::npos);
+  CHECK(b.find("\"max_output_tokens\":" + std::to_string(80 * 3 + 64 + 4096)) != std::string::npos);
+}
+
+TEST(chat_parse_responses_reply) {
+  std::string r, e;
+  const char* resp =
+      "{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":["
+      "{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"encrypted_content\":\"xx\"},"
+      "{\"type\":\"message\",\"role\":\"assistant\",\"content\":["
+      "{\"type\":\"output_text\",\"text\":\"指挥官，\",\"annotations\":[]},"
+      "{\"type\":\"output_text\",\"text\":\"红茶来了。\"}]}],\"usage\":{\"output_tokens\":9}}";
+  CHECK(parseChatReply(resp, &r, &e));
+  CHECK(r == "指挥官，红茶来了。");
+  CHECK(parseChatReply("{\"output_text\":\"好的\",\"output\":[]}", &r, &e));
+  CHECK(r == "好的");
+  CHECK(!parseChatReply("{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},"
+                        "\"output\":[{\"type\":\"reasoning\",\"summary\":[]}]}", &r, &e));
+  CHECK(e == "回复不完整：max_output_tokens");
+  CHECK(!parseChatReply("{\"error\":{\"code\":\"-1016\",\"message\":\"invalid target region\"}}", &r, &e));
+  CHECK(e == "invalid target region");
+}
+
 TEST(chat_json_quote) {
   CHECK(jsonQuote("a\"b\\c\n") == "\"a\\\"b\\\\c\\n\"");
   CHECK(jsonQuote("指挥官") == "\"指挥官\"");

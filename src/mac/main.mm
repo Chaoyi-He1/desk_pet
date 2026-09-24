@@ -850,7 +850,10 @@ struct Ship {
 
 // ---------- chat (optional; any OpenAI-compatible endpoint, key in chat.ini) ----------
 
-- (std::string)chatIniPath { return userDataDir() + "/chat.ini"; }
+- (std::string)chatIniPath {
+  if (const char* p = getenv("BELFASTPET_CHAT_INI")) return p;  // debug aid: test against another config
+  return userDataDir() + "/chat.ini";
+}
 
 - (pet::ChatConfig)chatConfig { return pet::ChatConfig::parse(readFile([self chatIniPath])); }
 
@@ -914,11 +917,16 @@ struct Ship {
   [self prepareChatSession];
   std::string user = text.UTF8String;
   std::string body = chat_.requestBody(cc, user);
-  NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@(cc.endpoint().c_str())]];
+  NSURL* url = [NSURL URLWithString:@(cc.requestUrl().c_str())];
+  if (!url) {
+    [self showBubble:"聊天设置里的 base_url 不是有效地址"];
+    return;
+  }
+  NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
   req.HTTPMethod = @"POST";
-  req.timeoutInterval = 60;
+  req.timeoutInterval = cc.reasoningEffort.empty() ? 60 : 120;  // reasoning models think first
   [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-  [req setValue:[@"Bearer " stringByAppendingString:@(cc.apiKey.c_str())] forHTTPHeaderField:@"Authorization"];
+  if (!cc.authorization().empty()) [req setValue:@(cc.authorization().c_str()) forHTTPHeaderField:@"Authorization"];
   req.HTTPBody = [NSData dataWithBytes:body.data() length:body.size()];
   chatBusy_ = true;
   chatPanel_.field.enabled = NO;
