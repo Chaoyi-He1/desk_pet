@@ -61,8 +61,8 @@ void Brain::move(int mx, int my) {
     vy_ = 0;
     enter(Anim::Drag);
   }
-  x_ = clampX(mx - offX_);
-  y_ = clampY(my - offY_);
+  x_ = cfg_.constrainDragToWorkArea ? clampX(mx - offX_) : mx - offX_;
+  y_ = cfg_.constrainDragToWorkArea ? clampY(my - offY_) : my - offY_;
 }
 
 void Brain::release() {
@@ -70,6 +70,10 @@ void Brain::release() {
   pressed_ = false;
   if (dragging_) {
     dragging_ = false;
+    // The shell may have selected a different monitor while dragging. Only now
+    // constrain the pet to that monitor, then fall to its own floor.
+    x_ = clampX(x_);
+    y_ = clampY(y_);
     if (y_ < groundTop()) {
       vy_ = 0;
       enter(Anim::Fall);

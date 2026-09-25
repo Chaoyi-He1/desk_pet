@@ -42,6 +42,29 @@ TEST(covers_monitor) {
   CHECK(!coversMonitor(Rect{100, 0, 2020, 1080}, mon));
 }
 
+TEST(monitor_selection_handles_left_right_above_and_below) {
+  std::vector<Rect> monitors{{0, 0, 1920, 1080}, {-1080, -100, 0, 1820},
+                            {1920, 0, 3840, 1080}, {0, -1080, 1920, 0},
+                            {0, 1080, 1920, 2160}};
+  CHECK_EQ(monitorAtPoint(monitors, 100, 100), 0);
+  CHECK_EQ(monitorAtPoint(monitors, -500, 100), 1);
+  CHECK_EQ(monitorAtPoint(monitors, 2500, 100), 2);
+  CHECK_EQ(monitorAtPoint(monitors, 100, -500), 3);
+  CHECK_EQ(monitorAtPoint(monitors, 100, 1500), 4);
+  CHECK_EQ(monitorAtPoint(monitors, 1920, 100), 2);  // shared boundary
+  CHECK_EQ(monitorAtPoint(monitors, 0, 100), 0);
+}
+
+TEST(monitor_selection_handles_gaps_and_disconnected_displays) {
+  std::vector<Rect> monitors{{0, 0, 1000, 800}, {1300, 300, 3220, 1380}};
+  CHECK_EQ(monitorAtPoint(monitors, 1100, 400), 0);
+  CHECK_EQ(monitorAtPoint(monitors, 1200, 400), 1);
+  CHECK_EQ(monitorAtPoint(monitors, 1800, -20), 1);
+  monitors.resize(1);
+  CHECK_EQ(monitorAtPoint(monitors, 2400, 800), 0);
+  CHECK_EQ(monitorAtPoint({}, 0, 0), -1);
+}
+
 // ---------- pose ----------
 TEST(pose_table) {
   CHECK_EQ(poseFrameCount(Anim::Idle), 2);
@@ -321,6 +344,82 @@ TEST(brain_drag_clamped_to_work_area) {
   f = b.tick(0);
   CHECK_EQ(f.x, 768);
   CHECK_EQ(f.y, 552);
+}
+
+TEST(brain_cross_display_drag_preserves_grab_offset_and_lands_on_target) {
+  struct Drop { Rect work; int x, y; };
+  const Drop drops[] = {
+    {{-1080, 40, 0, 1920}, -500, 300},
+    {{800, 0, 1600, 900}, 1200, 200},
+    {{0, -1080, 1920, 0}, 500, -700},
+    {{0, 600, 1920, 1680}, 500, 1000}
+  };
+  for (const Drop& drop : drops) {
+    BrainConfig c = testCfg();
+    c.constrainDragToWorkArea = false;
+    Brain b = makeBrain(1, c);
+    b.press(110, 570);  // grab offset (10, 18)
+    b.move(drop.x, drop.y);
+    Frame f = b.tick(0);
+    CHECK(f.anim == Anim::Drag);
+    CHECK_EQ(f.x, drop.x - 10);
+    CHECK_EQ(f.y, drop.y - 18);
+    // While held, animation ticks must not snap back to the previous monitor.
+    f = b.tick(200);
+    CHECK_EQ(f.x, drop.x - 10);
+    CHECK_EQ(f.y, drop.y - 18);
+    b.setWorkTop(drop.work.top);
+    b.setGround(drop.work.left, drop.work.right, drop.work.bottom);
+    b.release();
+    f = b.tick(0);
+    CHECK(f.anim == Anim::Fall);
+    CHECK(f.event == PetEvent::None);
+    for (int i = 0; f.anim == Anim::Fall && i < 200; ++i) f = b.tick(33);
+    CHECK(f.anim == Anim::Land);
+    CHECK_EQ(f.x, drop.x - 10);
+    CHECK_EQ(f.y, drop.work.bottom - c.spriteH);
+    // Idle walking remains on the selected screen.
+    for (int i = 0; i < 300; ++i) {
+      f = b.tick(100);
+      CHECK(f.x >= drop.work.left && f.x <= drop.work.right - c.spriteW);
+    }
+  }
+}
+
+TEST(brain_cross_display_drop_clamps_to_visible_work_area) {
+  BrainConfig c = testCfg();
+  c.constrainDragToWorkArea = false;
+  Brain b = makeBrain(1, c);
+  b.press(110, 570);
+  b.move(-20, 3000);
+  b.setWorkTop(40);
+  b.setGround(-1017, 0, 1957);  // left display, excluding its Dock
+  b.release();
+  Frame f = b.tick(0);
+  CHECK_EQ(f.x, -32);
+  CHECK_EQ(f.y, 1909);
+  CHECK(f.anim == Anim::Idle);
+  b.press(-20, 1920);
+  b.move(-2000, -5000);
+  b.release();
+  f = b.tick(0);
+  CHECK_EQ(f.x, -1017);
+  CHECK_EQ(f.y, 24);  // workTop minus one third of the canvas
+}
+
+TEST(brain_cross_display_drag_keeps_click_threshold) {
+  BrainConfig c = testCfg();
+  c.constrainDragToWorkArea = false;
+  c.specialChance = 0;
+  Brain b = makeBrain(1, c);
+  b.press(110, 570);
+  b.move(112, 571);
+  Frame f = b.tick(0);
+  CHECK_EQ(f.x, 100);
+  CHECK_EQ(f.y, 552);
+  CHECK(f.anim == Anim::Idle);
+  b.release();
+  CHECK(b.tick(0).event == PetEvent::TapBody);
 }
 
 TEST(brain_ground_inset_lowers_canvas) {

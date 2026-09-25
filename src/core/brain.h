@@ -29,6 +29,7 @@ struct BrainConfig {
   int dragThresholdPx = 4;
   double gravity = 1500;                                 // px/s^2
   bool canWalk = true;                                   // false: stays where it is put (paintings)
+  bool constrainDragToWorkArea = true;                   // multi-display shells select the work area on drop
 
   void setFrames(Anim a, int n) { variants[(int)a] = {n}; }
 };

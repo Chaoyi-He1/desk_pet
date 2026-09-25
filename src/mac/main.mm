@@ -23,6 +23,7 @@
 #include "core/chat.h"
 #include "mac/bubble.h"
 #include "mac/sprites.h"
+#include "mac/screen.h"
 
 using pet::Anim;
 
@@ -175,7 +176,8 @@ struct Ship {
 - (BOOL)hitAt:(NSPoint)p;
 - (void)mousePressed:(NSEvent*)e;
 - (void)mouseMoved:(NSEvent*)e;
-- (void)mouseReleased;
+- (void)mouseReleased:(NSEvent*)e;
+- (NSScreen*)petScreen;
 - (void)wheel:(NSEvent*)e;
 - (void)showMenu:(NSEvent*)e inView:(NSView*)v;
 @end
@@ -189,7 +191,7 @@ struct Ship {
 }
 - (void)mouseDown:(NSEvent*)e { [self.controller mousePressed:e]; }
 - (void)mouseDragged:(NSEvent*)e { [self.controller mouseMoved:e]; }
-- (void)mouseUp:(NSEvent*)e { [self.controller mouseReleased]; }
+- (void)mouseUp:(NSEvent*)e { [self.controller mouseReleased:e]; }
 - (void)rightMouseDown:(NSEvent*)e { [self.controller showMenu:e inView:self]; }
 - (void)scrollWheel:(NSEvent*)e { [self.controller wheel:e]; }
 @end
@@ -215,6 +217,7 @@ struct Ship {
   std::mt19937 rng_;
   pet::BrainConfig cfgBase_;
   int height_, configHeight_, bubbleMs_, chatterMin_, savedX_, pendingWheel_, timerMs_;
+  CGDirectDisplayID displayID_;
   bool userHeight_, mirrorLeft_, hideOnFullscreen_, userHidden_, fsHidden_, clickThrough_;
   // Paintings (static, dynamic, Live2D) and chibis keep separate sizes: [0] painting, [1] chibi.
   int heightK_[2];
@@ -259,6 +262,7 @@ struct Ship {
   cfgBase_.sleepAfterSec = ini.getInt("general", "sleep_after", 180);
   cfgBase_.idleMinMs = ini.getInt("general", "idle_min_ms", 4000);
   cfgBase_.idleMaxMs = ini.getInt("general", "idle_max_ms", 12000);
+  cfgBase_.constrainDragToWorkArea = false;
   for (int i = 0; i < (int)Anim::Count; ++i)
     cfgBase_.fps[i] = ini.getInt("fps", pet::animName((Anim)i), cfgBase_.fps[i]);
   fallbackVoices_ = pet::VoiceBank::parsePlain(readFile(assets_ + "/lines.txt"));
@@ -278,6 +282,7 @@ struct Ship {
   chatterMin_ = saved.getInt("", "chatter", chatterMin_);
   clickThrough_ = saved.getInt("", "clickthrough", 0) != 0;
   savedX_ = saved.getInt("", "x", savedX_);
+  displayID_ = (CGDirectDisplayID)saved.getInt("", "display", 0);
 
   [self scanShips];
   if (ships_.empty()) {
@@ -359,7 +364,7 @@ struct Ship {
   out << "last_day=" << lastDay_ << "\n";
   out << "chatter=" << chatterMin_ << "\n";
   out << "clickthrough=" << (clickThrough_ ? 1 : 0) << "\n";
-  if (brain_) out << "x=" << last_.x << "\n";
+  if (brain_) out << "x=" << last_.x << "\n" << "display=" << displayID_ << "\n";
 }
 
 // ---------- ships, skins, lines ----------
@@ -437,7 +442,7 @@ struct Ship {
   std::unique_ptr<petmac::SpriteSet> next(new petmac::SpriteSet());
   std::string path = shipsDir_ + "/" + ships_[ship].key + "/skins/" + skin;
   int kind = [self kindOfShip:ship skin:skin];
-  if (!next->load(path, heightK_[kind], userHeightK_[kind], NSScreen.mainScreen.backingScaleFactor, err)) return false;
+  if (!next->load(path, heightK_[kind], userHeightK_[kind], [self petScreen].backingScaleFactor, err)) return false;
   kind_ = kind;
   heightK_[kind] = next->size();
   height_ = heightK_[kind];
@@ -466,10 +471,12 @@ struct Ship {
   shownPose_ = pet::Pose();
   shownMirror_ = false;
   [self applySprites];
-  NSRect work = NSScreen.mainScreen.visibleFrame;
+  NSRect work = [self petScreen].visibleFrame;
   if (x < NSMinX(work) || x > NSMaxX(work) - 20) x = (int)(NSMaxX(work) - cfg.spriteW - 24);
-  brain_->setPosition(x, 0);
   [self updateGround];
+  // Install the selected monitor's bounds before restoring x: a left-hand
+  // monitor has negative coordinates, outside a new Brain's default bounds.
+  brain_->setPosition(x, brain_->groundTop());
   brain_->setHidden(userHidden_ || fsHidden_);
   timerMs_ = -1;
   lastTick_ = CACurrentMediaTime();
@@ -522,7 +529,7 @@ struct Ship {
 
 // Sizes the panel and layers for the current sprite set.
 - (void)applySprites {
-  CGFloat scale = NSScreen.mainScreen.backingScaleFactor;
+  CGFloat scale = [self petScreen].backingScaleFactor;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   view_.picLayer.affineTransform = CGAffineTransformIdentity;
@@ -696,22 +703,36 @@ struct Ship {
   if (!hide && wasHidden && hiddenSince_ > 0 && CACurrentMediaTime() - hiddenSince_ > 600) [self say:pet::Scene::Home];
 }
 
+- (NSScreen*)petScreen {
+  for (NSScreen* screen in NSScreen.screens)
+    if (petmac::displayID(screen) == displayID_) return screen;
+  // A disconnected monitor falls back to the closest remaining one.
+  NSScreen* screen = brain_ ? petmac::screenAtPoint(NSMakePoint(NSMidX(panel_.frame), NSMidY(panel_.frame))) : NSScreen.mainScreen;
+  if (!screen) screen = NSScreen.screens.firstObject;
+  displayID_ = petmac::displayID(screen);
+  return screen;
+}
+
 - (void)updateGround {
-  NSRect work = NSScreen.mainScreen.visibleFrame;
+  NSRect work = [self petScreen].visibleFrame;
   CGFloat sh = screenH();
   brain_->setWorkTop((int)(sh - NSMaxY(work)));
   brain_->setGround((int)NSMinX(work), (int)NSMaxX(work), (int)(sh - NSMinY(work)));
 }
 
 - (void)screenChanged {
+  if (!brain_) return;
+  bool airborne = brain_->anim() == Anim::Drag || brain_->anim() == Anim::Fall;
+  int y = (int)(screenH() - NSMaxY(panel_.frame));
   [self updateGround];
+  brain_->setPosition(last_.x, airborne ? y : brain_->groundTop());
   [self step:0];
 }
 
 // ---------- size ----------
 
 - (void)applyHeight:(int)height {
-  int h = pet::clampHeightToScreen(height, (int)NSScreen.mainScreen.visibleFrame.size.height);
+  int h = pet::clampHeightToScreen(height, (int)[self petScreen].visibleFrame.size.height);
   if (h == heightK_[kind_] && userHeightK_[kind_]) return;
   int prev = heightK_[kind_];
   bool prevUser = userHeightK_[kind_];
@@ -881,7 +902,7 @@ struct Ship {
     chatPanel_.onSend = ^(NSString* text) { [weakSelf sendChat:text]; };
   }
   CGFloat sh = screenH();
-  NSRect work = NSScreen.mainScreen.visibleFrame;
+  NSRect work = [self petScreen].visibleFrame;
   CGFloat x = last_.x + sprites_->width() / 2.0 - chatPanel_.frame.size.width / 2;
   CGFloat y = sh - last_.y - sprites_->height() - chatPanel_.frame.size.height - 6;  // just below her
   if (y < NSMinY(work)) y = sh - last_.y - sprites_->headTop() + 60;                // or above the bubble
@@ -1008,26 +1029,37 @@ struct Ship {
 
 // ---------- mouse ----------
 
-static void brainPoint(int* x, int* y) {
-  NSPoint p = NSEvent.mouseLocation;
+static NSPoint eventScreenPoint(NSEvent* e) {
+  return e.window ? [e.window convertPointToScreen:e.locationInWindow] : NSEvent.mouseLocation;
+}
+
+static void brainPoint(NSEvent* e, int* x, int* y) {
+  NSPoint p = eventScreenPoint(e);
   *x = (int)p.x;
   *y = (int)(screenH() - p.y);
 }
 
 - (void)mousePressed:(NSEvent*)e {
   int x, y;
-  brainPoint(&x, &y);
+  brainPoint(e, &x, &y);
   brain_->press(x, y);
 }
 - (void)mouseMoved:(NSEvent*)e {
   int x, y;
-  brainPoint(&x, &y);
+  brainPoint(e, &x, &y);
   brain_->move(x, y);
   [self step:0];
 }
-- (void)mouseReleased {
+- (void)mouseReleased:(NSEvent*)e {
+  bool moved = brain_->anim() == Anim::Drag;
+  if (moved) {
+    NSScreen* screen = petmac::screenAtPoint(eventScreenPoint(e));
+    if (screen) displayID_ = petmac::displayID(screen);
+    [self updateGround];
+  }
   brain_->release();
   [self step:0];
+  if (moved) [self writeSettings];
 }
 
 // ---------- debug aid ----------
