@@ -2,10 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>BelfastPet</string>
-  <key>CFBundleDisplayName</key><string>BelfastPet</string>
+  <key>CFBundleName</key><string>azure_lane_pet</string>
+  <key>CFBundleDisplayName</key><string>azure_lane_pet</string>
   <key>CFBundleIdentifier</key><string>io.github.belfastpet</string>
-  <key>CFBundleExecutable</key><string>BelfastPet</string>
+  <key>CFBundleExecutable</key><string>azure_lane_pet</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>1.0.0</string>
   <key>CFBundleShortVersionString</key><string>1.0.0</string>

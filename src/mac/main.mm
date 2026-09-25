@@ -1,4 +1,4 @@
-// BelfastPet — macOS shell (AppKit).
+// azure_lane_pet (formerly BelfastPet) — macOS shell (AppKit).
 //
 // A borderless, non-activating NSPanel shows the pet in a CALayer. Painting poses are
 // layer transforms; chibi frames are cropped images placed in the layer. The CPU wakes
@@ -50,8 +50,11 @@ static std::string assetsDir() {
 
 static std::string userDataDir() {
   NSArray* dirs = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
-  NSString* dir = [dirs.firstObject stringByAppendingPathComponent:@"BelfastPet"];
-  [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSString* dir = [dirs.firstObject stringByAppendingPathComponent:@"azure_lane_pet"];
+  NSString* old = [dirs.firstObject stringByAppendingPathComponent:@"BelfastPet"];  // name before the rename
+  if (![fm fileExistsAtPath:dir] && [fm fileExistsAtPath:old]) [fm moveItemAtPath:old toPath:dir error:nil];
+  [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
   return dir.UTF8String;
 }
 
@@ -338,7 +341,7 @@ struct Ship {
 
 - (void)fail:(const std::string&)msg {
   NSAlert* a = [[NSAlert alloc] init];
-  a.messageText = @"BelfastPet";
+  a.messageText = @"azure_lane_pet";
   a.informativeText = @(msg.c_str());
   [a runModal];
   [NSApp terminate:nil];
@@ -765,7 +768,7 @@ struct Ship {
   } else {
     status_.button.title = @"🫖";
   }
-  status_.button.toolTip = @"BelfastPet";
+  status_.button.toolTip = @"azure_lane_pet";
   status_.menu = [self buildMenu];
 }
 

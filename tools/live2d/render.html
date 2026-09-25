@@ -10,7 +10,11 @@
 </head><body><div id="status">loading…</div>
 <script>
 const status = (s) => { document.getElementById('status').textContent = s; fetch('/log', {method: 'POST', body: s}); };
-const jobs = JSON.parse(decodeURIComponent(new URLSearchParams(location.search).get('jobs')));
+// ?jobs=<url-encoded JSON>, or ?jobsFile=<name> for a job list jobs.py --json wrote next to this page.
+const params = new URLSearchParams(location.search);
+const jobsReady = params.get('jobsFile')
+  ? fetch(params.get('jobsFile')).then((r) => r.json())
+  : Promise.resolve(JSON.parse(decodeURIComponent(params.get('jobs'))));
 const SIZE = 2048;
 
 async function renderJob(app, job) {
@@ -29,8 +33,13 @@ async function renderJob(app, job) {
   // their computed opacity is zeroed after every core update, before drawing.
   const drawIds = Array.from(core.drawables.ids), drawParents = Array.from(core.drawables.parentPartIndices);
   let hiddenDraw = new Set((job.hideDrawables || []).map((id) => drawIds.indexOf(id)).filter((i) => i >= 0));
+  // Parameters held at a fixed value, e.g. a camera zoom (All_Size) some motions animate: the
+  // character moves, the view stays put. Written after the motions and physics, before the core.
+  const paramIds = Array.from(core.parameters.ids);
+  const pins = Object.entries(job.pinParams || {}).map(([id, v]) => [paramIds.indexOf(id), v]).filter(([i]) => i >= 0);
   const coreUpdate = cm.update.bind(cm);
   cm.update = () => {
+    for (const [i, v] of pins) core.parameters.values[i] = v;
     for (const i of lastHidden) if (!hidden.has(i)) cm.setPartOpacityByIndex(i, baseOpacity[i]);
     for (const i of hidden) cm.setPartOpacityByIndex(i, 0);
     lastHidden = new Set(hidden);
@@ -39,9 +48,12 @@ async function renderJob(app, job) {
   };
   const w = model.width, h = model.height;
   const k = Math.min((SIZE * 0.96) / w, (SIZE * 0.96) / h);
-  model.scale.set(k);
+  // view {zoom, cx, cy}: magnify the standard fit so that its canvas point (cx, cy) lands in
+  // the middle (a high-resolution still of what is left once the background is hidden).
+  const v = job.view || {zoom: 1, cx: SIZE / 2, cy: SIZE / 2};
+  model.scale.set(k * v.zoom);
   model.anchor.set(0.5, 0.5);
-  model.position.set(SIZE / 2, SIZE / 2);
+  model.position.set(SIZE / 2 - v.zoom * (v.cx - SIZE / 2), SIZE / 2 - v.zoom * (v.cy - SIZE / 2));
   app.stage.removeChildren();
   app.stage.addChild(model);
   const dt = 1000 / job.fps;
@@ -113,7 +125,7 @@ async function renderJob(app, job) {
                                       autoStart: false, antialias: true, premultipliedAlpha: true});
     app.ticker.stop();
     document.body.appendChild(app.view);
-    for (const job of jobs) await renderJob(app, job);
+    for (const job of await jobsReady) await renderJob(app, job);
     status('ALL DONE');
   } catch (e) {
     status('ERROR ' + (e && e.stack || e));

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Build dist/BelfastPet.app on macOS with clang++.
+# Build dist/azure_lane_pet.app on macOS with clang++ (universal: Apple silicon and Intel).
 set -euo pipefail
 cd "$(dirname "$0")"
-APP=dist/BelfastPet.app
+APP=dist/azure_lane_pet.app
 mkdir -p build/mac "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 clang++ -std=c++17 -ObjC++ -fobjc-arc -O2 -Wall -Wextra -Wno-unused-parameter \
-  -mmacosx-version-min=12.0 -I src \
+  -mmacosx-version-min=12.0 -arch arm64 -arch x86_64 -I src \
   src/core/*.cpp src/mac/*.mm \
   -framework Cocoa -framework QuartzCore -framework ImageIO -framework ServiceManagement -framework CoreGraphics -framework IOSurface \
-  -o "$APP/Contents/MacOS/BelfastPet"
+  -o "$APP/Contents/MacOS/azure_lane_pet"
 cp src/mac/Info.plist "$APP/Contents/Info.plist"
 
 rm -rf "$APP/Contents/Resources/assets"

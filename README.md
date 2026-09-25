@@ -1,11 +1,13 @@
-# BelfastPet · 碧蓝航线桌面宠物
+# azure_lane_pet · 碧蓝航线桌面宠物
 
-碧蓝航线舰娘的桌面宠物，支持 Windows 10/11 和 macOS 12+。目前有贝尔法斯特、柴郡、信浓、能代四位，共 49 套形象：
+（原名 BelfastPet。）
+
+碧蓝航线舰娘的桌面宠物，支持 Windows 10/11 和 macOS 12+。目前有贝尔法斯特、柴郡、信浓、能代四位，共 53 套形象：
 
 - 官方立绘（静态）：34 套
 - Q 版骨骼动画：37 套（会走、会被拎起、会睡觉）
 - 动态立绘：4 套（贝尔法斯特改造、至福的侍奉，信浓默认，能代月夜花泉）
-- Live2D：7 套（贝尔法斯特彩云之玫瑰，柴郡 4 套，能代 2 套）
+- Live2D：11 套（贝尔法斯特彩云之玫瑰，柴郡 4 套，信浓 4 套，能代 2 套）
 
 设计目标是占用低、不打扰：
 
@@ -44,7 +46,7 @@ Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测过占用�
 
 ### 和她聊天
 
-右键「聊天设置…」会打开 `chat.ini`（Windows 在 `%APPDATA%\BelfastPet\`，macOS 在 `~/Library/Application Support/BelfastPet/`）。填上 `api_key`，需要的话改 `base_url` 和 `model`，就能用右键「和她聊天…」打字聊天，回复显示在气泡里。
+右键「聊天设置…」会打开 `chat.ini`（Windows 在 `%APPDATA%\azure_lane_pet\`，macOS 在 `~/Library/Application Support/azure_lane_pet/`）。填上 `api_key`，需要的话改 `base_url` 和 `model`，就能用右键「和她聊天…」打字聊天，回复显示在气泡里。
 
 - 支持任何兼容 OpenAI `chat/completions` 接口的服务，例如 OpenAI、DeepSeek、通义千问、本地的 Ollama。
 - 也支持 Responses API：加 `api=responses`；用 `?ak=` 传 key 的服务（例如字节 ModelHub）再加 `auth=ak`；推理模型可以用 `reasoning_effort=low/medium/high` 调推理强度。
@@ -54,13 +56,15 @@ Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测过占用�
 
 开启「鼠标穿透」后宠物不再响应鼠标，要关掉请用托盘（Windows）或状态栏（macOS）图标的菜单。
 
-右键菜单里改过的设置保存在用户目录：Windows 是 `%APPDATA%\BelfastPet\settings.ini`，macOS 是 `~/Library/Application Support/BelfastPet/settings.ini`。其余默认值在 `assets/config.ini`。
+右键菜单里改过的设置保存在用户目录：Windows 是 `%APPDATA%\azure_lane_pet\settings.ini`，macOS 是 `~/Library/Application Support/azure_lane_pet/settings.ini`。其余默认值在 `assets/config.ini`。用过旧版（BelfastPet）的话，旧的设置目录会在第一次启动时自动改名沿用。
 
 ## 运行
 
-**Windows**：解压 `BelfastPet-win`，双击 `BelfastPet.exe`。
+第一次启动默认显示柴郡的 Q 版童年形象，右键「切换形象」可以换。
 
-**macOS**：把 `BelfastPet.app` 拖到「应用程序」后双击。首次运行如果提示无法验证开发者，右键 app 选「打开」。
+**Windows**：解压 `azure_lane_pet-win`，双击 `azure_lane_pet.exe`。
+
+**macOS**：把 `azure_lane_pet.app` 拖到「应用程序」后双击。Apple 芯片和 Intel 的 Mac 都能用（macOS 12 以上）。首次运行如果提示无法验证开发者，右键 app 选「打开」；还打不开就到 系统设置 → 隐私与安全性 里点「仍要打开」。
 
 ## 素材
 
@@ -130,8 +134,8 @@ Cubism Core 是 Live2D 的专有软件，使用前需同意它的许可协议（
 
 ```ini
 [general]
-ship=belfast          ; 默认角色
-skin=01-改造.png       ; 默认形象
+ship=cheshire         ; 默认角色
+skin=Q版-08-童年        ; 默认形象
 height=320            ; 默认大小：立绘高度；Q 版身高是它的 80%
 chatter_minutes=20    ; 自动说话间隔，0 为关闭
 walk_speed=40
@@ -148,9 +152,9 @@ bubble_ms=3000        ; 气泡最短显示时长；长台词显示更久
 clang++ -std=c++17 -I src tests/test_core.cpp src/core/*.cpp -o build/test_core && ./build/test_core
 ```
 
-- **macOS**：`./build_mac.sh`，输出 `dist/BelfastPet.app`。
+- **macOS**：`./build_mac.sh`，输出 `dist/azure_lane_pet.app`（Apple 芯片和 Intel 通用）。要发给别人时再运行 `./package_mac.sh`，得到 `dist/azure_lane_pet-mac.zip`，里面附了一份打开方法说明。
 - **Windows（在 Windows 上）**：装好 Visual Studio 2022 或 MinGW-w64 和 CMake，运行 `build.bat`。
-- **Windows（在 macOS / Linux 上交叉编译）**：`brew install mingw-w64` 后运行 `./build_win.sh`，输出 `dist/BelfastPet-win/`。
+- **Windows（在 macOS / Linux 上交叉编译）**：`brew install mingw-w64` 后运行 `./build_win.sh`，输出 `dist/azure_lane_pet-win/`。
 
 打包脚本会把 `assets/ships/` 一起放进去。
 
@@ -163,8 +167,8 @@ clang++ -std=c++17 -I src tests/test_core.cpp src/core/*.cpp -o build/test_core 
 - 只在主显示器的工作区活动。
 - 只显示台词文字，不播放语音。
 - 部分皮肤在游戏里有更华丽的待机动作（荡秋千、魔术柜等），因为画面太大，桌宠里换成了普通待机。
-- 只做了模拟器里下载到的动态立绘和 Live2D。游戏里其他 Live2D 皮肤需要先在游戏里打开一次才会下载。
-- 部分 Live2D 皮肤在游戏里还有拖动特定部位触发的互动（例如柴郡的绚烂夜梦、童话书迷宫）。桌宠里拖动用来移动位置，这些互动没有做。
+- 只做了模拟器里下载到的动态立绘和 Live2D。游戏里其他 Live2D 皮肤需要先在游戏里打开一次才会下载，或在设置里下载全部 Live2D 资源。
+- 部分 Live2D 皮肤在游戏里还有拖动特定部位触发的互动（例如柴郡的绚烂夜梦、童话书迷宫，信浓的白沙幽梦、幻梦奇术、相融一梦）。桌宠里拖动用来移动位置，这些互动没有做。
 - 信浓的动态立绘在游戏里没有表情动画，点击时只说台词。
 - Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测试过。
 - macOS 和 Windows 版都没有签名。

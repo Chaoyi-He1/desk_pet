@@ -99,7 +99,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ship", action="append", help="only these ships (repeatable)")
     ap.add_argument("--no-paint", action="store_true")
-    ap.add_argument("--no-sd", action="store_true")
+    ap.add_argument("--no-sd", action="store_true", help="skip rendering chibi (Q版) skins")
     ap.add_argument("--no-voice", action="store_true")
     ap.add_argument("--only-animated", action="store_true", help="only copy dynamic-painting and Live2D skins")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2))
@@ -130,7 +130,7 @@ def main():
                 else:
                     print(f"{key:9s} painting {label:28s} MISSING {s['painting']} (run tools/fetch_paintings.py)")
             for key_name, root, prefix in (("dyn", DYN, "动态-"), ("l2d", L2D, "L2D-")):
-                if s.get(key_name) and not a.no_sd:
+                if s.get(key_name):  # prepared frames: copied even with --no-sd (that only skips chibi renders)
                     src = os.path.join(root, s[key_name])
                     if os.path.isfile(os.path.join(src, "meta.ini")):
                         copy_animated(src, os.path.join(skins_dir, prefix + label))

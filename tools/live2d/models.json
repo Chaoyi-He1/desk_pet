@@ -1,10 +1,14 @@
 {
- "_doc": "Per model: hide = Live2D parts to hide (background, stage props); hide_meshes = single art meshes to hide (a prop drawn into a part that also holds her body); skip = game motions not to render (camera zooms, full-screen effects); clip = states that do not widen the crop box (stray effects are cut off at its edge).",
+ "_doc": "Per model: hide = Live2D parts to hide (background, stage props); hide_meshes = single art meshes to hide (a prop drawn into a part that also holds her body); pin = parameters held fixed (a camera zoom some motions animate); skip = game motions not to render (camera zooms, full-screen effects); clip = states that do not widen the crop box (stray effects are cut off at its edge).",
  "beierfasite_2": {"hide": []},
  "chaijun_3": {"hide": ["Part163"], "clip": ["blink_main2"]},
  "chaijun_4": {"hide": ["Part15"]},
  "chaijun_5": {"hide": ["Part50"], "skip": ["main_2", "main_3"]},
- "chaijun_6": {"hide": ["BG", "Part25"], "skip": ["touch_body", "main_2", "main_3"]},
+ "chaijun_6": {"pin": {"Param98": 0, "Param117": 0, "Param118": 0}, "hide": ["BG", "Part25"], "skip": ["main_2", "main_3"]},
  "nengdai_2": {"hide": ["Part25"]},
- "nengdai_3": {"hide": ["Part16", "Part23", "Part86"], "hide_meshes": ["ArtMesh146"]}
+ "nengdai_3": {"hide": ["Part16", "Part23", "Part86"], "hide_meshes": ["ArtMesh146"]},
+ "xinnong_3": {"pin": {"Param87": 0, "Param89": 0}, "hide": ["Part17", "Part36", "Part56", "Part25", "Part41", "Part42"]},
+ "xinnong_4": {"hide": ["Part11", "Part80"]},
+ "xinnong_5": {"pin": {"All_Size": 0, "All_Y": 0, "All_X": 0, "All_Angle": 0}, "hide": ["Part35", "Part71", "Part72", "Part73", "Part74", "Part75", "Part76", "Part77", "Part78", "Part110", "Part111"]},
+ "xinnong_6": {"pin": {"ParamzhengtiX": 0, "ParamzhengtiY": 0, "ParamzhengtiS1": 0}, "hide": ["Part21", "Part63", "Part56"], "hide_meshes": ["ArtMesh285", "ArtMesh490", "ArtMesh281", "ArtMesh271"]}
 }

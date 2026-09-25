@@ -41,10 +41,10 @@
     "skins": [
       {"num": "01", "id": 307080, "name": "默认", "painting": "shinano_307080_painting.png", "sd": "xinnong", "wiki": "", "dyn": "xinnong"},
       {"num": "02", "id": 307081, "name": "胧月十夜", "painting": "shinano_307081_painting.png", "sd": "xinnong_2", "wiki": "胧月十夜"},
-      {"num": "03", "id": 307082, "name": "轰鸣的银轮", "painting": "shinano_307082_painting_n.png", "sd": "xinnong_3", "wiki": "轰鸣的银轮"},
-      {"num": "04", "id": 307083, "name": "白沙幽梦", "painting": "shinano_307083_painting.png", "sd": "xinnong_4", "wiki": "白沙幽梦"},
-      {"num": "05", "id": 307084, "name": "幻梦奇术", "painting": "shinano_307084_painting_n.png", "sd": "xinnong_5", "wiki": "幻梦奇术"},
-      {"num": "06", "id": 307085, "name": "相融一梦", "painting": "shinano_307085_painting.png", "sd": "xinnong_6", "wiki": "相融一梦"},
+      {"num": "03", "id": 307082, "name": "轰鸣的银轮", "painting": "shinano_307082_painting_n.png", "sd": "xinnong_3", "wiki": "轰鸣的银轮", "l2d": "xinnong_3"},
+      {"num": "04", "id": 307083, "name": "白沙幽梦", "painting": "stills/xinnong_4.png", "sd": "xinnong_4", "wiki": "白沙幽梦", "l2d": "xinnong_4"},
+      {"num": "05", "id": 307084, "name": "幻梦奇术", "painting": "shinano_307084_painting_n.png", "sd": "xinnong_5", "wiki": "幻梦奇术", "l2d": "xinnong_5"},
+      {"num": "06", "id": 307085, "name": "相融一梦", "painting": "stills/xinnong_6.png", "sd": "xinnong_6", "wiki": "相融一梦", "l2d": "xinnong_6"},
       {"num": "07", "name": "童年", "sd": "xinnong_younv", "voice": "01"}
     ]
   },

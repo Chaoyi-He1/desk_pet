@@ -6,8 +6,8 @@ into a pet skin folder under assets/official/l2d_skins/<model>/.
 
 All frames share one crop (the union of visible pixels, leaving out the states listed
 under "clip" in models.json) and are scaled so that it is PICTURE_PX tall, then quantised
-with pngquant. States whose motion is under "skip" are left out. The first idle frame,
-at capture resolution, is also saved as assets/official/stills/<model>.png: a
+with pngquant. States whose motion is under "skip" are left out. The first idle frame
+(magnified by jobs.py --still when that was rendered) is also saved as assets/official/stills/<model>.png: a
 background-free static painting for skins whose official picture has scenery baked in. meta.ini marks the skin as a stationary
 painting (kind=painting, walk=0, size_ratio=1: the pet size is the picture height) and
 spaces out the long main-screen motions (idle_min_ms / idle_max_ms).
@@ -72,7 +72,8 @@ def finalize(model):
                     head_top = rows.min() if head_top is None else min(head_top, rows.min())
                     bottom = rows.max() if bottom is None else max(bottom, rows.max())
             im.save(os.path.join(dst, state, f"{i:03d}.png"))
-    still = Image.open(fr["idle"][0]).convert("RGBA")
+    hi = os.path.join(RAW, "_stills", model, "still", "000.png")  # jobs.py --still, if rendered
+    still = Image.open(hi if os.path.exists(hi) else fr["idle"][0]).convert("RGBA")
     bb = still.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
     os.makedirs(STILLS, exist_ok=True)
     (still.crop(bb) if bb else still).save(os.path.join(STILLS, model + ".png"), optimize=True)

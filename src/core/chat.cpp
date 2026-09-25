@@ -65,7 +65,7 @@ std::string ChatConfig::requestUrl() const {
 std::string ChatConfig::authorization() const { return keyInQuery ? "" : "Bearer " + apiKey; }
 
 const char* chatIniTemplate() {
-  return "; BelfastPet 对话设置。填好 api_key 后右键菜单「和她聊天」即可使用。\n"
+  return "; azure_lane_pet 对话设置。填好 api_key 后右键菜单「和她聊天」即可使用。\n"
          "; 支持任何兼容 OpenAI chat/completions 接口的服务（OpenAI、DeepSeek、通义、本地 Ollama 等）。\n"
          "; 聊天内容只会发送到这里填写的地址；不填 api_key 则功能关闭。\n"
          "[chat]\n"

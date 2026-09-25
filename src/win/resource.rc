@@ -13,7 +13,7 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "Belfast Desktop Pet"
       VALUE "FileVersion", "1.0.0.0"
-      VALUE "ProductName", "BelfastPet"
+      VALUE "ProductName", "azure_lane_pet"
       VALUE "ProductVersion", "1.0.0.0"
     END
   END

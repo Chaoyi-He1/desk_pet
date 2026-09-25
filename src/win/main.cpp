@@ -1,4 +1,4 @@
-// BelfastPet — Win32 shell.
+// azure_lane_pet (formerly BelfastPet) — Win32 shell.
 //
 // A layered, non-activating tool window shows one pre-rendered frame at a time. A
 // single timer runs at the current animation's frame rate; a slow timer watches the
@@ -38,7 +38,7 @@ using pet::Anim;
 const wchar_t* kClass = L"BelfastPetWindow";
 const wchar_t* kMutex = L"Local\\BelfastPet.SingleInstance";
 const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const wchar_t* kRunName = L"BelfastPet";
+const wchar_t* kRunName = L"azure_lane_pet";
 const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3, ID_RESIZE = 4, ID_CHATTER = 5, ID_FADE = 6;
 const UINT WM_TRAY = WM_APP + 1;
 const UINT WM_CHAT_DONE = WM_APP + 2;  // lParam: ChatResult* from the worker thread
@@ -166,7 +166,10 @@ std::vector<std::wstring> listEntries(const std::wstring& dir, bool dirsOnly) {
 std::wstring userDataDir() {
   wchar_t buf[MAX_PATH];
   if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, buf))) return exeDir();
-  std::wstring dir = std::wstring(buf) + L"\\BelfastPet";
+  std::wstring dir = std::wstring(buf) + L"\\azure_lane_pet";
+  std::wstring old = std::wstring(buf) + L"\\BelfastPet";  // name before the rename
+  if (GetFileAttributesW(dir.c_str()) == INVALID_FILE_ATTRIBUTES && GetFileAttributesW(old.c_str()) != INVALID_FILE_ATTRIBUTES)
+    MoveFileW(old.c_str(), dir.c_str());
   CreateDirectoryW(dir.c_str(), nullptr);
   return dir;
 }
@@ -552,7 +555,7 @@ DWORD WINAPI chatThread(LPVOID param) {
   if (!WinHttpCrackUrl(job->url.c_str(), 0, 0, &uc)) {
     res->netError = "base_url 无效";
   } else {
-    ses = WinHttpOpen(L"BelfastPet/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    ses = WinHttpOpen(L"azure_lane_pet/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (ses) WinHttpSetTimeouts(ses, 10000, 10000, job->timeoutMs, job->timeoutMs);
     con = ses ? WinHttpConnect(ses, host, uc.nPort, 0) : nullptr;
     std::wstring object = std::wstring(path) + extra;
@@ -815,7 +818,7 @@ void showMenu(App& app) {
         if (si < (int)app.ships.size() && k < (int)app.ships[si].skins.size()) {
           std::wstring err;
           if (loadSkin(app, si, app.ships[si].skins[k], &err)) writeSettings(app);
-          else MessageBoxW(app.hwnd, err.c_str(), L"BelfastPet", MB_OK | MB_ICONWARNING);
+          else MessageBoxW(app.hwnd, err.c_str(), L"azure_lane_pet", MB_OK | MB_ICONWARNING);
         }
       } else if (cmd >= IDM_SIZE_BASE && cmd < IDM_SIZE_BASE + (int)pet::heightPresets().size()) {
         applyHeight(app, pet::heightPresets()[cmd - IDM_SIZE_BASE]);
@@ -837,7 +840,7 @@ void addTray(App& app) {
   app.nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
   app.nid.uCallbackMessage = WM_TRAY;
   app.nid.hIcon = app.icon;
-  lstrcpynW(app.nid.szTip, L"BelfastPet — 双击显示/隐藏，右键菜单", ARRAYSIZE(app.nid.szTip));
+  lstrcpynW(app.nid.szTip, L"azure_lane_pet — 双击显示/隐藏，右键菜单", ARRAYSIZE(app.nid.szTip));
   Shell_NotifyIconW(NIM_ADD, &app.nid);
 }
 
@@ -1017,7 +1020,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
 
   scanShips(app);
   if (app.ships.empty()) {
-    MessageBoxW(nullptr, (L"没有找到形象。\n\n请先运行 tools/build_ships.py 生成\n" + app.shipsDir).c_str(), L"BelfastPet",
+    MessageBoxW(nullptr, (L"没有找到形象。\n\n请先运行 tools/build_ships.py 生成\n" + app.shipsDir).c_str(), L"azure_lane_pet",
                 MB_OK | MB_ICONWARNING);
     return 1;
   }
@@ -1047,16 +1050,16 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   RegisterClassW(&wc);
   app.hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, kClass,
-                             L"BelfastPet", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, hinst, nullptr);
+                             L"azure_lane_pet", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, hinst, nullptr);
   if (!app.hwnd) {
-    MessageBoxW(nullptr, L"窗口创建失败。", L"BelfastPet", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, L"窗口创建失败。", L"azure_lane_pet", MB_OK | MB_ICONERROR);
     return 1;
   }
   app.bubble.create(hinst);
 
   std::wstring err;
   if (!loadSkin(app, ship, skin, &err) && !loadSkin(app, 0, app.ships[0].skins.front(), &err)) {
-    MessageBoxW(nullptr, err.c_str(), L"BelfastPet", MB_OK | MB_ICONWARNING);
+    MessageBoxW(nullptr, err.c_str(), L"azure_lane_pet", MB_OK | MB_ICONWARNING);
     return 1;
   }
   applyClickThrough(app);
