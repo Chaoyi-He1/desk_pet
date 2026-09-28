@@ -5,6 +5,7 @@
   python3 tools/spine/test_spine.py --record   print fresh chibi hashes (paste into CHIBI_BASELINE)
 
 1. Chibi models render bit-identically to the recorded baseline (geometry floats and pixels).
+   (A later check makes sure exported grounded states rest no lower than idle.)
 2. The JSON skeleton reader: every field and convention on a small synthetic skeleton, and
    the expected structure for beierfasite_g.
 3. Path constraints: Spine 3.8 semantics on synthetic paths, and the bone the constraint in
@@ -506,6 +507,35 @@ def check_atlas_rotation():
     return f"corners ok for 0/90/180/270; {len(worst)} rotated meshes in nengdai_9, min coverage {min(worst)[0]:.2f}"
 
 
+def check_grounded_states():
+    """No grounded state rests below idle: the game authors sit and sleep for dorm furniture,
+    below the model origin, and exported as-is the pet sank when she sat down."""
+    import glob
+    import tempfile
+    from PIL import Image
+    d = os.path.join(CHAR, "chaijun_younv")
+    if not os.path.isdir(d):
+        return "skip (chibi sources missing)"
+    with tempfile.TemporaryDirectory() as tmp:
+        render38.export(d, tmp, fps=4, ss=1, char_px=160, log=lambda *_: None)
+
+        def rest(state):  # lowest opaque row in the frame where that row is highest
+            rows = []
+            for f in sorted(glob.glob(os.path.join(tmp, state, "*.png"))):
+                ys = np.nonzero(np.asarray(Image.open(f))[..., 3].max(axis=1) > 40)[0]
+                if len(ys):
+                    rows.append(int(ys.max()))
+            return min(rows)
+
+        base = rest("idle")
+        offs = {s: rest(s) - base for s in os.listdir(tmp)
+                if os.path.isdir(os.path.join(tmp, s)) and s not in ("idle", "drag", "fall")}
+    assert "blink_sit" in offs and "sleep" in offs, f"states missing: {sorted(offs)}"
+    low = {s: o for s, o in offs.items() if o > 2}
+    assert not low, f"states resting below idle (px): {low}"
+    return "rest vs idle (px): " + ", ".join(f"{s}={o:+d}" for s, o in sorted(offs.items()))
+
+
 def main():
     if "--record" in sys.argv:
         for k, v in chibi_hashes().items():
@@ -515,7 +545,8 @@ def main():
     checks = [("chibi bit-identical", check_chibi), ("JSON reader, synthetic", check_json_synthetic),
               ("JSON reader, beierfasite_g", check_json_painting), ("path constraint, synthetic", check_path_synthetic),
               ("path constraint, beierfasite_9", check_path_painting), ("expression overlay", check_overlay),
-              ("model paths", check_model_paths), ("atlas rotation", check_atlas_rotation)]
+              ("model paths", check_model_paths), ("atlas rotation", check_atlas_rotation),
+              ("grounded states", check_grounded_states)]
     for name, fn in checks:
         t0 = time.time()
         try:

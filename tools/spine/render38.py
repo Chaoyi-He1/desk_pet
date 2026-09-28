@@ -7,7 +7,9 @@
 MODEL_DIR holds <name>.skel, <name>.atlas and the atlas page PNG(s) (as unpacked by
 tools/extract_from_device.py). OUT_DIR receives one folder per pet state (frames
 000.png, 001.png ...) and meta.ini. All frames share one canvas and one ground line, so
-the pet does not jump between states. Frames face right; the app mirrors them.
+the pet does not jump between states; grounded states that the game authors below the
+model origin (sit and sleep, made for dorm furniture) are raised to rest where idle does.
+Frames face right; the app mirrors them.
 
 Without --map, each state picks the first suitable animation from STATE_CANDIDATES:
 showy skins whose idle spans a whole stage fall back to a calmer idle, and random idle
@@ -426,6 +428,39 @@ def choose_states(model, fps, log=print):
     return chosen
 
 
+AIRBORNE = {"drag", "fall"}  # held by the mouse or falling: placed by the app, not by the ground
+
+
+def union_box(boxes):
+    boxes = [b for b in boxes if b]
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def ground_lifts(m, plan, box, scale):
+    """Skeleton units to raise each grounded state by so that it rests no lower than idle.
+    A state's rest is the lowest opaque row of its frame where that row is highest (feet
+    down, nothing swinging below them). The game authors sit and sleep for dorm furniture,
+    below the model origin; drawn as-is on the pet's single ground line she sank when she
+    sat down. States that rest higher (jumps) are left alone."""
+    def rest(anim, times):
+        rows = []
+        for t in times:
+            ys = np.nonzero(m.render(anim, t, box, scale, 1)[..., 3].max(axis=1) > 40)[0]
+            if len(ys):
+                rows.append(int(ys.max()))
+        return min(rows) if rows else None
+
+    base = rest(*plan["idle"])
+    lifts = {}
+    for state, (anim, times) in plan.items():
+        if state == "idle" or state in AIRBORNE or base is None:
+            continue
+        r = rest(anim, times)
+        if r is not None and r - base > 1:
+            lifts[state] = (r - base) / scale
+    return lifts
+
+
 def export(model_dir, out_dir, fps=10.0, scale=None, ss=3, mapping=None, char_px=480, log=print):
     """`scale` px per skeleton unit; by default chosen so the idle character is `char_px` tall,
     which keeps every model equally sharp whatever its skeleton units."""
@@ -439,12 +474,16 @@ def export(model_dir, out_dir, fps=10.0, scale=None, ss=3, mapping=None, char_px
         idle_anim, idle_times = plan["idle"]
         ib = m.visible_box([(idle_anim, idle_times[::3] or idle_times)], step=1)
         scale = char_px / max(1.0, ib[3] - ib[1])
-    vb = m.visible_box([(a, t) for a, t in plan.values()])
     pad = 6 / scale
+    vbs = {s: m.visible_box([(a, t)]) for s, (a, t) in plan.items()}
+    vb = union_box(vbs.values())
+    lift = ground_lifts(m, plan, (vb[0] - pad, min(vb[1], 0.0) - pad, vb[2] + pad, vb[3] + pad), scale)
+    vb = union_box((b[0], b[1] + lift.get(s, 0.0), b[2], b[3] + lift.get(s, 0.0)) for s, b in vbs.items() if b)
     box = (vb[0] - pad, min(vb[1], 0.0) - pad, vb[2] + pad, vb[3] + pad)
     W = int(math.ceil((box[2] - box[0]) * scale))
     H = int(math.ceil((box[3] - box[1]) * scale))
-    log(f"{m.name}: canvas {W}x{H}; " + ", ".join(f"{s}={a.name}" for s, (a, _) in plan.items()))
+    log(f"{m.name}: canvas {W}x{H}; " + ", ".join(f"{s}={a.name}" for s, (a, _) in plan.items())
+        + ("; lifted " + ", ".join(f"{s} {v * scale:.0f}px" for s, v in lift.items()) if lift else ""))
 
     head_top, heights = None, []
     for state, (anim, times) in plan.items():
@@ -453,8 +492,10 @@ def export(model_dir, out_dir, fps=10.0, scale=None, ss=3, mapping=None, char_px
         for f in os.listdir(d):
             if f.endswith(".png"):
                 os.remove(os.path.join(d, f))
+        up = lift.get(state, 0.0)
+        sbox = (box[0], box[1] - up, box[2], box[3] - up)  # a lower window: the pose appears raised
         for i, t in enumerate(times):
-            img = m.render(anim, t, box, scale, ss)
+            img = m.render(anim, t, sbox, scale, ss)
             if state == "idle":
                 ys = np.nonzero(img[..., 3].max(axis=1) > 16)[0]
                 if len(ys):
