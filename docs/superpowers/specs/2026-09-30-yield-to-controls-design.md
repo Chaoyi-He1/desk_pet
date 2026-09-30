@@ -21,7 +21,7 @@ Q 版在屏幕底部走动时，经常停在其他程序的按钮、链接、输
 
 取身后那一点的无障碍元素，检查它和往上最多 3 层父元素，满足任一条件即可点：
 
-- macOS：角色是 AXButton、AXLink、AXCheckBox、AXRadioButton、AXPopUpButton、AXMenuButton、AXComboBox、AXTextField、AXTextArea、AXMenuItem、AXMenuBarItem、AXDockItem、AXDisclosureTriangle、AXSlider、AXIncrementor、AXTabGroup 中的一种；或支持 AXPress、AXOpen、AXConfirm、AXPick、AXIncrement 中的任一动作（AXShowMenu 太普遍，不算）。
+- macOS：角色是 AXButton、AXLink、AXCheckBox、AXRadioButton、AXPopUpButton、AXMenuButton、AXComboBox、AXTextField、AXTextArea、AXMenuItem、AXMenuBarItem、AXDockItem、AXDisclosureTriangle、AXSlider、AXIncrementor 中的一种（标签页的标签本身是 AXRadioButton，已包含；整个标签页容器不算）；或支持 AXPress、AXOpen、AXConfirm、AXPick、AXIncrement 中的任一动作（AXShowMenu 太普遍，不算）。
 - Windows（MSAA）：角色是 PUSHBUTTON、LINK、CHECKBUTTON、RADIOBUTTON、COMBOBOX、BUTTONMENU、BUTTONDROPDOWN、SPLITBUTTON、MENUITEM、PAGETAB、LISTITEM、OUTLINEITEM、SLIDER，或可编辑的 TEXT；或有非空的默认动作（accDefaultAction）。
 - 属于桌宠自己进程的元素（台词气泡、聊天框）不算。
 
@@ -46,7 +46,7 @@ Q 版在屏幕底部走动时，经常停在其他程序的按钮、链接、输
 ### 悬停
 
 - 鼠标位置每秒检查约 4 次；鼠标在她窗口范围内时提高到约每秒 12 次。只读鼠标位置，开销很小。
-- 鼠标在她的不透明像素上时：先按缓存立即决定让不让开；同时对鼠标所在格子发起一次实时查询（同一格在一次悬停期间只查一次，每 0.5 秒最多重查一次），结果与缓存不同时按实时结果修正并更新缓存。
+- 鼠标在她的不透明像素上时：先按缓存立即决定让不让开；同时对鼠标所在格子发起一次实时查询（同一格在一次悬停期间只实时查一次），结果写回缓存，与缓存不同时按实时结果修正。
 - 同一时刻最多只有一个查询在进行；后台扫描和悬停查询共用这个限制，悬停查询优先。
 
 ## 平台实现
@@ -54,6 +54,7 @@ Q 版在屏幕底部走动时，经常停在其他程序的按钮、链接、输
 ### macOS
 
 - 找身后的窗口：`CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenBelowWindow, 桌宠窗口编号)`，取第一个包含该点、不属于本进程的窗口（包括 Dock 和桌面图标层），得到所属进程 PID。读窗口位置和 PID 不需要屏幕录制权限。
+- Electron 类程序默认不对外提供控件信息：第一次查询某个进程时，给它设一次 `AXManualAccessibility = true`。
 - 对该进程做命中测试：`AXUIElementCreateApplication(pid)`，`AXUIElementSetMessagingTimeout(0.1 秒)`，`AXUIElementCopyElementAtPosition(x, y)`，然后按上面的规则检查角色和动作。这样查到的是后面程序里的元素，不会查到桌宠自己。
 - 坐标：无障碍接口和窗口列表都用左上角为原点的全局坐标，与 Cocoa 的左下角坐标按主屏高度换算。
 - 让开：`panel.ignoresMouseEvents = YES` 并把窗口不透明度动画到 0.3；恢复时反过来。让开期间窗口收不到鼠标事件，靠上面的鼠标位置轮询判断何时恢复。
