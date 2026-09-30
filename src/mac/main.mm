@@ -24,6 +24,8 @@
 #include "mac/bubble.h"
 #include "mac/sprites.h"
 #include "mac/screen.h"
+#include "core/yield.h"
+#include "mac/yield_probe.h"
 
 using pet::Anim;
 
@@ -80,6 +82,8 @@ static std::vector<std::string> listEntries(const std::string& dir, bool dirsOnl
 
 // Brain uses a top-left origin (y down); AppKit uses bottom-left (y up) on the main screen.
 static CGFloat screenH() { return NSScreen.screens.firstObject.frame.size.height; }
+
+static int64_t nowMs() { return (int64_t)(CACurrentMediaTime() * 1000.0); }
 
 static bool foregroundIsFullscreen() {
   NSRunningApplication* front = NSWorkspace.sharedWorkspace.frontmostApplication;
@@ -234,6 +238,18 @@ struct Ship {
   CGImageRef shownImage_;
   pet::Pose shownPose_;
   bool shownMirror_;
+  // yield to controls behind her (docs/superpowers/specs/2026-09-30-yield-to-controls-design.md)
+  bool yieldOn_, yieldApplied_, axTrusted_, pressing_;
+  pet::CellCache yieldCache_;
+  pet::ProbeQueue probes_;
+  pet::HoverProbeGate hoverGate_;
+  pet::YieldController yielder_;
+  uint64_t windowsSig_;
+  NSTimer* hoverTimer_;
+  NSTimer* sigTimer_;
+  NSTimer* scanTimer_;
+  double hoverInterval_;
+  dispatch_queue_t probeQueue_;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification*)n {
@@ -281,6 +297,10 @@ struct Ship {
   lastDay_ = saved.get("", "last_day", "");
   chatterMin_ = saved.getInt("", "chatter", chatterMin_);
   clickThrough_ = saved.getInt("", "clickthrough", 0) != 0;
+  yieldOn_ = saved.getInt("", "yield", 1) != 0;
+  yieldApplied_ = pressing_ = axTrusted_ = false;
+  windowsSig_ = 0;
+  hoverInterval_ = 0;
   savedX_ = saved.getInt("", "x", savedX_);
   displayID_ = (CGDirectDisplayID)saved.getInt("", "display", 0);
 
@@ -332,6 +352,7 @@ struct Ship {
   watchTimer_ = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(watch) userInfo:nil repeats:YES];
   watchTimer_.tolerance = 0.5;
   [self applyChatterTimer];
+  [self startYield];
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(screenChanged)
                                                name:NSApplicationDidChangeScreenParametersNotification
@@ -353,7 +374,8 @@ struct Ship {
 }
 
 - (void)writeSettings {
-  if (getenv("BELFASTPET_SNAPSHOT") || getenv("BELFASTPET_SKIN") || getenv("BELFASTPET_CHAT") || getenv("BELFASTPET_INVISIBLE"))
+  if (getenv("BELFASTPET_SNAPSHOT") || getenv("BELFASTPET_SKIN") || getenv("BELFASTPET_CHAT") || getenv("BELFASTPET_INVISIBLE") ||
+      getenv("BELFASTPET_PROBE"))
     return;  // test runs never touch the user's settings
   std::ofstream out(settingsFile(), std::ios::binary | std::ios::trunc);
   if (ship_ >= 0) out << "ship=" << ships_[ship_].key << "\n";
@@ -364,6 +386,7 @@ struct Ship {
   out << "last_day=" << lastDay_ << "\n";
   out << "chatter=" << chatterMin_ << "\n";
   out << "clickthrough=" << (clickThrough_ ? 1 : 0) << "\n";
+  out << "yield=" << (yieldOn_ ? 1 : 0) << "\n";
   if (brain_) out << "x=" << last_.x << "\n" << "display=" << displayID_ << "\n";
 }
 
@@ -598,7 +621,7 @@ struct Ship {
   CGFloat sh = screenH();
   NSPoint origin = NSMakePoint(f.x, sh - f.y - sprites_->height());
   if (!NSEqualPoints(panel_.frame.origin, origin)) [panel_ setFrameOrigin:origin];
-  if (!panel_.visible || (panel_.alphaValue < 1 && !getenv("BELFASTPET_INVISIBLE"))) [self fadeIn];
+  if (!panel_.visible || panel_.alphaValue < [self restAlpha] - 0.01) [self fadeIn];
   [bubble_ moveToAnchorX:f.x + sprites_->width() / 2.0 anchorY:sh - f.y - sprites_->headTop()];
 }
 
@@ -609,7 +632,7 @@ struct Ship {
     [panel_ orderFrontRegardless];
   }
   // BELFASTPET_INVISIBLE: test runs stay practically invisible on the user's screen.
-  CGFloat full = getenv("BELFASTPET_INVISIBLE") ? 0.01 : 1.0;
+  CGFloat full = [self restAlpha];
   [NSAnimationContext runAnimationGroup:^(NSAnimationContext* ctx) {
     ctx.duration = 0.25;
     panel_.animator.alphaValue = full;
@@ -843,6 +866,9 @@ struct Ship {
   [self add:m title:@"聊天设置…" action:@selector(openChatSettings:) tag:0 on:false];
   [m addItem:[NSMenuItem separatorItem]];
   [self add:m title:@"鼠标穿透（用状态栏图标关闭）" action:@selector(toggleClickThrough:) tag:0 on:clickThrough_];
+  [self add:m title:@"遇到按钮时让开（按住 ⌥ 可点她）" action:@selector(toggleYield:) tag:0 on:yieldOn_];
+  if (yieldOn_ && !axTrusted_)
+    [self add:m title:@"授予辅助功能权限…（让开功能需要）" action:@selector(grantAccessibility:) tag:0 on:false];
   [self add:m title:@"全屏时自动隐藏" action:@selector(toggleFullscreenHide:) tag:0 on:hideOnFullscreen_];
   if (@available(macOS 13.0, *)) {
     [self add:m title:@"登录时启动" action:@selector(toggleLogin:) tag:0
@@ -993,7 +1019,7 @@ struct Ship {
 }
 - (void)toggleClickThrough:(id)s {
   clickThrough_ = !clickThrough_;
-  panel_.ignoresMouseEvents = clickThrough_;
+  panel_.ignoresMouseEvents = clickThrough_ || yieldApplied_;
   [self writeSettings];
   [self refreshMenu];
 }
@@ -1027,6 +1053,140 @@ struct Ship {
   [NSMenu popUpContextMenu:[self buildMenu] withEvent:e forView:v];
 }
 
+// ---------- yield to controls ----------
+
+- (void)startYield {
+  probeQueue_ = dispatch_queue_create("azure_lane_pet.yield", DISPATCH_QUEUE_SERIAL);
+  bool quiet = getenv("BELFASTPET_INVISIBLE") || getenv("BELFASTPET_SNAPSHOT") || getenv("BELFASTPET_PROBE");
+  axTrusted_ = petmac::axTrusted(yieldOn_ && !quiet);  // asks once per launch until granted
+  [self setHoverInterval:0.25];
+  sigTimer_ = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(yieldWatchWindows) userInfo:nil repeats:YES];
+  sigTimer_.tolerance = 0.5;
+  scanTimer_ = [NSTimer scheduledTimerWithTimeInterval:10.0 target:self selector:@selector(yieldScan) userInfo:nil repeats:YES];
+  scanTimer_.tolerance = 2.0;
+}
+
+- (bool)yieldActive {
+  return yieldOn_ && axTrusted_ && !clickThrough_ && brain_ && last_.visible;
+}
+
+// Her opaque pixels, asked with global top-left screen coordinates.
+- (bool)opaqueAtX:(double)x y:(double)y {
+  NSRect f = panel_.frame;
+  NSPoint local = NSMakePoint(x - NSMinX(f), (screenH() - y) - NSMinY(f));
+  if (local.x < 0 || local.y < 0 || local.x >= f.size.width || local.y >= f.size.height) return false;
+  return [self hitAt:local];
+}
+
+- (void)setHoverInterval:(double)s {
+  if (s == hoverInterval_) return;
+  hoverInterval_ = s;
+  [hoverTimer_ invalidate];
+  hoverTimer_ = [NSTimer scheduledTimerWithTimeInterval:s target:self selector:@selector(hoverCheck) userInfo:nil repeats:YES];
+  hoverTimer_.tolerance = s * 0.2;
+}
+
+// Windows below the strip she lives in (her screen's width, from her top down): any change
+// clears the cache.
+- (void)yieldWatchWindows {
+  axTrusted_ = petmac::axTrusted(false);
+  if (![self yieldActive]) return;
+  NSRect f = panel_.frame, s = [self petScreen].frame;
+  CGFloat sh = screenH();
+  pet::Rect region = {(int)NSMinX(s), (int)(sh - NSMaxY(f)), (int)NSMaxX(s), (int)(sh - NSMinY(s))};
+  uint64_t sig = pet::windowSignature(petmac::windowsBelow((CGWindowID)panel_.windowNumber, region));
+  if (sig != windowsSig_) {
+    windowsSig_ = sig;
+    yieldCache_.clear();
+    probes_.clearScan();
+  }
+}
+
+- (void)yieldScan {
+  if (![self yieldActive]) return;
+  NSRect f = panel_.frame;
+  CGFloat sh = screenH();
+  std::vector<pet::Cell> cells =
+      pet::footprint((int)NSMinX(f), (int)(sh - NSMaxY(f)), (int)NSMaxX(f), (int)(sh - NSMinY(f)),
+                     [&](int x, int y) { return [self opaqueAtX:x y:y]; });
+  probes_.requestScan(yieldCache_.stale(cells, nowMs(), 80));
+  [self pumpProbes];
+}
+
+- (void)pumpProbes {
+  pet::ProbeJob job;
+  if (!probes_.next(&job)) return;
+  CGWindowID below = (CGWindowID)panel_.windowNumber;
+  dispatch_async(probeQueue_, ^{
+    pid_t pid = petmac::ownerBelow(below, job.x, job.y);
+    bool clickable = pid > 0 && petmac::clickableInApp(pid, job.x, job.y);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      yieldCache_.put(job.cell, clickable, nowMs());
+      probes_.done();
+      if (job.hover) [self hoverCheck];
+      [self pumpProbes];
+    });
+  });
+}
+
+- (void)hoverCheck {
+  if (!brain_) return;
+  NSPoint m = NSEvent.mouseLocation;
+  CGFloat sh = screenH();
+  double x = m.x, y = sh - m.y;
+  NSRect f = panel_.frame;
+  bool inside = x >= NSMinX(f) && x < NSMaxX(f) && y >= sh - NSMaxY(f) && y < sh - NSMinY(f);
+  [self setHoverInterval:inside ? 1.0 / 12 : 0.25];
+  bool over = inside && [self yieldActive] && [self opaqueAtX:x y:y];
+  pet::Cell cell = pet::cellAt((int)x, (int)y);
+  if (!over) {
+    hoverGate_.reset();
+  } else if (hoverGate_.due(cell)) {
+    hoverGate_.mark(cell);
+    probes_.requestHover(cell, (int)x, (int)y);
+    [self pumpProbes];
+  }
+  pet::YieldInput in;
+  in.enabled = yieldOn_ && axTrusted_;
+  in.clickThrough = clickThrough_;
+  in.visible = last_.visible;
+  in.pressed = pressing_;
+  in.overPet = over;
+  in.modifier = (NSEvent.modifierFlags & NSEventModifierFlagOption) != 0;
+  in.cell = over ? yieldCache_.get(cell, nowMs()) : pet::CellState::Unknown;
+  [self applyYield:yielder_.update(in, nowMs())];
+}
+
+- (CGFloat)restAlpha {
+  if (getenv("BELFASTPET_INVISIBLE")) return 0.01;
+  return yieldApplied_ ? 0.3 : 1.0;
+}
+
+- (void)applyYield:(bool)y {
+  if (y == yieldApplied_) return;
+  yieldApplied_ = y;
+  panel_.ignoresMouseEvents = y || clickThrough_;
+  if (!last_.visible) return;
+  [NSAnimationContext runAnimationGroup:^(NSAnimationContext* ctx) {
+    ctx.duration = 0.1;
+    panel_.animator.alphaValue = [self restAlpha];
+  }];
+}
+
+- (void)toggleYield:(id)s {
+  yieldOn_ = !yieldOn_;
+  axTrusted_ = petmac::axTrusted(yieldOn_);  // turning it on asks for the permission
+  yieldCache_.clear();
+  [self hoverCheck];
+  [self writeSettings];
+  [self refreshMenu];
+}
+
+- (void)grantAccessibility:(id)s {
+  petmac::axTrusted(true);
+  petmac::openAccessibilitySettings();
+}
+
 // ---------- mouse ----------
 
 static NSPoint eventScreenPoint(NSEvent* e) {
@@ -1040,6 +1200,7 @@ static void brainPoint(NSEvent* e, int* x, int* y) {
 }
 
 - (void)mousePressed:(NSEvent*)e {
+  pressing_ = true;
   int x, y;
   brainPoint(e, &x, &y);
   brain_->press(x, y);
@@ -1051,6 +1212,7 @@ static void brainPoint(NSEvent* e, int* x, int* y) {
   [self step:0];
 }
 - (void)mouseReleased:(NSEvent*)e {
+  pressing_ = false;
   bool moved = brain_->anim() == Anim::Drag;
   if (moved) {
     NSScreen* screen = petmac::screenAtPoint(eventScreenPoint(e));
@@ -1075,6 +1237,18 @@ static void brainPoint(NSEvent* e, int* x, int* y) {
 }
 
 - (void)maybeSnapshot {
+  if (const char* at = getenv("BELFASTPET_PROBE")) {  // debug aid: "x,y" (global, top-left) -> what is behind, then quit
+    double x = 0, y = 0;
+    sscanf(at, "%lf,%lf", &x, &y);
+    CGWindowID below = (CGWindowID)panel_.windowNumber;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      pid_t pid = petmac::ownerBelow(below, x, y);
+      bool clickable = pid > 0 && petmac::clickableInApp(pid, x, y);
+      fprintf(stderr, "probe %.0f,%.0f trusted=%d pid=%d clickable=%d\n", x, y, petmac::axTrusted(false), pid, clickable);
+      dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+    });
+    return;
+  }
   if (const char* msg = getenv("BELFASTPET_CHAT")) {  // debug aid: send two chat lines, then quit
     NSString* m = @(msg);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
