@@ -8,6 +8,7 @@
 #include "core/voice.h"
 #include "core/chat.h"
 #include "core/frames.h"
+#include "core/yield.h"
 #include <chrono>
 #include <cstring>
 
@@ -767,6 +768,135 @@ TEST(chat_clip_and_prompt) {
   std::string p = chatSystemPrompt("贝尔法斯特", "改造", {"欢迎回来"}, 60);
   CHECK(p.find("贝尔法斯特") != std::string::npos && p.find("改造") != std::string::npos);
   CHECK(p.find("60") != std::string::npos && p.find("- 欢迎回来") != std::string::npos);
+}
+
+// ---------- yield ----------
+TEST(yield_cells_floor_and_center) {
+  CHECK(cellAt(0, 0) == (Cell{0, 0}));
+  CHECK(cellAt(15, 31) == (Cell{0, 1}));
+  CHECK(cellAt(-1, -16) == (Cell{-1, -1}));
+  CHECK(cellAt(-17, 16) == (Cell{-2, 1}));
+  int x, y;
+  cellCenter({-1, 2}, &x, &y);
+  CHECK_EQ(x, -8);
+  CHECK_EQ(y, 40);
+}
+
+TEST(yield_cache_expiry_and_capacity) {
+  CellCache c(60000, 3);
+  CHECK(c.get({1, 1}, 0) == CellState::Unknown);
+  c.put({1, 1}, true, 1000);
+  c.put({2, 1}, false, 2000);
+  CHECK(c.get({1, 1}, 60999) == CellState::Clickable);
+  CHECK(c.get({1, 1}, 61000) == CellState::Unknown);  // one minute later
+  CHECK(c.get({2, 1}, 3000) == CellState::Plain);
+  c.put({3, 1}, false, 3000);
+  c.put({4, 1}, false, 4000);  // full: the oldest ({1, 1}) goes
+  CHECK_EQ(c.size(), (size_t)3);
+  CHECK(c.get({1, 1}, 4000) == CellState::Unknown);
+  CHECK(c.get({4, 1}, 4000) == CellState::Plain);
+  c.clear();
+  CHECK_EQ(c.size(), (size_t)0);
+}
+
+TEST(yield_cache_stale_cells_in_order) {
+  CellCache c;
+  c.put({0, 0}, false, 0);
+  c.put({1, 0}, true, 0);
+  std::vector<Cell> want = {{0, 0}, {1, 0}, {2, 0}, {3, 0}};
+  std::vector<Cell> s = c.stale(want, 1000, 10);
+  CHECK_EQ(s.size(), (size_t)2);
+  CHECK(s[0] == (Cell{2, 0}) && s[1] == (Cell{3, 0}));
+  CHECK_EQ(c.stale(want, 1000, 1).size(), (size_t)1);
+  CHECK_EQ(c.stale(want, 70000, 10).size(), (size_t)4);  // all expired
+}
+
+TEST(yield_footprint_uses_opaque_centers) {
+  // a 40x20 window at (100, 50), opaque only left of x = 120
+  auto opaque = [](int x, int) { return x < 120; };
+  std::vector<Cell> f = footprint(100, 50, 140, 70, opaque);
+  CHECK_EQ(f.size(), (size_t)1);  // centers x 104/120/136, y 56 (72 is outside)
+  CHECK(f[0] == (Cell{6, 3}));
+  CHECK(footprint(0, 0, 0, 10, opaque).empty());
+}
+
+TEST(yield_window_signature_changes) {
+  std::vector<WindowInfo> a = {{7, 0, 0, 100, 100}, {9, 10, 10, 50, 50}};
+  std::vector<WindowInfo> b = a;
+  CHECK(windowSignature(a) == windowSignature(b));
+  b[1].left = 11;  // moved
+  CHECK(windowSignature(a) != windowSignature(b));
+  std::vector<WindowInfo> c = {a[1], a[0]};  // stacking order swapped
+  CHECK(windowSignature(a) != windowSignature(c));
+  CHECK(windowSignature({}) != windowSignature({a[0]}));
+}
+
+TEST(yield_probe_queue_hover_first_one_at_a_time) {
+  ProbeQueue q;
+  ProbeJob j;
+  CHECK(!q.next(&j));
+  q.requestScan({{0, 0}, {1, 0}});
+  q.requestHover({5, 5}, 85, 90);
+  CHECK(q.next(&j));
+  CHECK(j.hover && j.cell == (Cell{5, 5}) && j.x == 85 && j.y == 90);
+  CHECK(!q.next(&j));  // busy
+  q.done();
+  CHECK(q.next(&j));
+  CHECK(!j.hover && j.cell == (Cell{0, 0}) && j.x == 8 && j.y == 8);  // scans probe the cell center
+  CHECK(q.scanning());
+  q.requestScan({{9, 9}});  // ignored: a scan is still going
+  q.done();
+  CHECK(q.next(&j));
+  CHECK(j.cell == (Cell{1, 0}));
+  q.done();
+  CHECK(!q.scanning());
+  CHECK(!q.next(&j));
+  q.requestScan({{9, 9}});
+  CHECK(q.next(&j) && j.cell == (Cell{9, 9}));
+}
+
+TEST(yield_hover_gate_once_per_cell) {
+  HoverProbeGate g;
+  CHECK(g.due({1, 1}));
+  g.mark({1, 1});
+  CHECK(!g.due({1, 1}));
+  CHECK(g.due({2, 1}));
+  g.reset();
+  CHECK(g.due({1, 1}));
+}
+
+TEST(yield_controller_decisions) {
+  YieldController y(200);
+  YieldInput in;
+  in.overPet = true;
+  in.cell = CellState::Clickable;
+  CHECK(y.update(in, 0));  // over a button: step aside
+  in.cell = CellState::Plain;
+  CHECK(y.update(in, 100));   // still inside the restore delay
+  CHECK(!y.update(in, 200));  // back after 200 ms
+  in.cell = CellState::Unknown;
+  CHECK(!y.update(in, 300));  // not knowing is no reason
+  in.cell = CellState::Clickable;
+  CHECK(y.update(in, 400));
+  in.modifier = true;
+  CHECK(!y.update(in, 410));  // Option / Alt: back at once
+  in.modifier = false;
+  in.pressed = true;
+  CHECK(!y.update(in, 420));  // pressing or dragging her: never
+  in.pressed = false;
+  in.clickThrough = true;
+  CHECK(!y.update(in, 430));
+  in.clickThrough = false;
+  in.enabled = false;
+  CHECK(!y.update(in, 440));
+  in.enabled = true;
+  in.visible = false;
+  CHECK(!y.update(in, 450));
+  in.visible = true;
+  CHECK(y.update(in, 460));
+  in.overPet = false;
+  CHECK(y.update(in, 500));   // cursor left her: the delay applies too
+  CHECK(!y.update(in, 660));
 }
 
 // ---------- frames ----------
