@@ -45,7 +45,7 @@ const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3, ID_RESIZE = 4, ID_CHATTER
                 ID_YIELD_SIG = 8, ID_YIELD_SCAN = 9;
 const UINT WM_TRAY = WM_APP + 1;
 const UINT WM_CHAT_DONE = WM_APP + 2;  // lParam: ChatResult* from the worker thread
-const UINT WM_YIELD_PROBED = WM_APP + 3;  // wParam: token, lParam: 1 = clickable (petwin::ProbeThread)
+const UINT WM_YIELD_PROBED = WM_APP + 3;  // wParam: token, lParam: petwin::Probe (petwin::ProbeThread)
 const int kChatterChoices[] = {0, 10, 20, 30, 60};  // minutes; 0 = off
 enum {
   IDM_TOGGLE = 100, IDM_AUTOSTART, IDM_HIDE_FS, IDM_OPEN_ASSETS, IDM_EXIT,
@@ -513,11 +513,13 @@ void yieldWatchWindows(App& app) {
 }
 
 void yieldScan(App& app) {
-  if (!yieldActive(app) || !app.cur.bmp || app.probes.scanning()) return;
-  std::vector<pet::Cell> cells = pet::footprint(app.curX, app.curY, app.curX + app.cur.w, app.curY + app.cur.h,
-                                                [&](int x, int y) { return opaqueAt(app, x, y); });
-  app.probes.requestScan(app.yieldCache.stale(cells, nowMs(), 80));
-  pumpProbes(app);
+  if (!yieldActive(app) || !app.cur.bmp) return;
+  if (!app.probes.scanning()) {
+    std::vector<pet::Cell> cells = pet::footprint(app.curX, app.curY, app.curX + app.cur.w, app.curY + app.cur.h,
+                                                  [&](int x, int y) { return opaqueAt(app, x, y); });
+    app.probes.requestScan(app.yieldCache.stale(cells, nowMs(), 80));
+  }
+  pumpProbes(app);  // also resumes a batch that waited while programs were hanging
 }
 
 void applyYield(App& app, bool y) {

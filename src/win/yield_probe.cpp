@@ -95,12 +95,20 @@ Probe clickableIn(HWND w, POINT pt) {
   if (!SendMessageTimeoutW(w, WM_NULL, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &answer)) return Probe::Unknown;
   IAccessible* acc = nullptr;
   if (FAILED(AccessibleObjectFromWindow(w, (DWORD)OBJID_CLIENT, IID_IAccessible, (void**)&acc)) || !acc)
-    return Probe::Plain;
+    return Probe::Unknown;
   long childId = CHILDID_SELF;
   for (int depth = 0; depth < 16; ++depth) {  // down to the deepest object at the point
     VARIANT hit;
     VariantInit(&hit);
-    if (FAILED(acc->accHitTest(pt.x, pt.y, &hit))) break;
+    HRESULT hr = acc->accHitTest(pt.x, pt.y, &hit);
+    if (FAILED(hr)) {
+      // The program rejected or dropped the call (e.g. Office while editing a cell): no answer.
+      if (depth == 0 && HRESULT_FACILITY(hr) == FACILITY_RPC) {
+        acc->Release();
+        return Probe::Unknown;
+      }
+      break;
+    }
     if (hit.vt == VT_DISPATCH && hit.pdispVal) {
       IAccessible* inner = nullptr;
       HRESULT hr = hit.pdispVal->QueryInterface(IID_IAccessible, (void**)&inner);
