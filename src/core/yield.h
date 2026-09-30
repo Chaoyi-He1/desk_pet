@@ -113,6 +113,8 @@ public:
     return it == checked_.end() || nowMs - it->second >= ttl_;
   }
   void mark(Cell c, int64_t nowMs) { checked_[c] = nowMs; }
+  // The program could not be asked (busy, not responding): due again after `afterMs`.
+  void retryAfter(Cell c, int64_t nowMs, int64_t afterMs) { checked_[c] = nowMs - ttl_ + afterMs; }
   void reset() { checked_.clear(); }
 
 private:

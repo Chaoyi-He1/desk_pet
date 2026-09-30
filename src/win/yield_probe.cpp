@@ -86,14 +86,16 @@ HWND windowBelowAt(HWND pet, POINT pt) {
   return nullptr;
 }
 
-bool clickableIn(HWND w, POINT pt) {
-  if (!w) return false;
-  // A program that is not responding would block the accessibility calls: skip it.
-  if (IsHungAppWindow(w)) return false;
+Probe clickableIn(HWND w, POINT pt) {
+  if (!w) return Probe::Plain;  // nothing but the desktop background
+  // A program that is not responding (or busy right now) would block the accessibility
+  // calls: do not ask it, and do not take that for an answer either.
+  if (IsHungAppWindow(w)) return Probe::Unknown;
   DWORD_PTR answer = 0;
-  if (!SendMessageTimeoutW(w, WM_NULL, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &answer)) return false;
+  if (!SendMessageTimeoutW(w, WM_NULL, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &answer)) return Probe::Unknown;
   IAccessible* acc = nullptr;
-  if (FAILED(AccessibleObjectFromWindow(w, (DWORD)OBJID_CLIENT, IID_IAccessible, (void**)&acc)) || !acc) return false;
+  if (FAILED(AccessibleObjectFromWindow(w, (DWORD)OBJID_CLIENT, IID_IAccessible, (void**)&acc)) || !acc)
+    return Probe::Plain;
   long childId = CHILDID_SELF;
   for (int depth = 0; depth < 16; ++depth) {  // down to the deepest object at the point
     VARIANT hit;
@@ -135,8 +137,12 @@ bool clickableIn(HWND w, POINT pt) {
     found = itemClickable(acc, CHILDID_SELF);
   }
   acc->Release();
-  return found;
+  return found ? Probe::Clickable : Probe::Plain;
 }
+
+static volatile LONG g_stuck = 0;  // abandoned threads that have not finished yet
+
+long ProbeThread::stuck() { return InterlockedCompareExchange(&g_stuck, 0, 0); }
 
 ProbeThread* ProbeThread::start(HWND notify, UINT msg) {
   ProbeThread* t = new ProbeThread(notify, msg);
@@ -159,10 +165,11 @@ ProbeThread::~ProbeThread() {  // only ever run by the thread itself, or when it
 }
 
 void ProbeThread::abandon() {
+  InterlockedIncrement(&g_stuck);
   EnterCriticalSection(&lock_);
   quit_ = true;
+  WakeConditionVariable(&wake_);  // while holding the lock: once it is released the thread may free itself
   LeaveCriticalSection(&lock_);
-  WakeConditionVariable(&wake_);
 }
 
 void ProbeThread::submit(HWND pet, POINT pt, WPARAM token) {
@@ -190,14 +197,15 @@ DWORD WINAPI ProbeThread::main(LPVOID p) {
     WPARAM token = self->token_;
     self->has_ = false;
     LeaveCriticalSection(&self->lock_);
-    bool clickable = clickableIn(windowBelowAt(pet, pt), pt);
+    Probe result = clickableIn(windowBelowAt(pet, pt), pt);
     EnterCriticalSection(&self->lock_);
     bool quit = self->quit_;
     LeaveCriticalSection(&self->lock_);
-    if (!quit) PostMessageW(self->notify_, self->msg_, token, clickable ? 1 : 0);
+    if (!quit) PostMessageW(self->notify_, self->msg_, token, (LPARAM)result);
   }
   CoUninitialize();
   delete self;  // abandoned: nobody else holds it any more
+  InterlockedDecrement(&g_stuck);
   return 0;
 }
 

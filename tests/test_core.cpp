@@ -864,6 +864,9 @@ TEST(yield_hover_gate_once_per_cell_until_expiry) {
   CHECK(g.due({1, 1}, 61000));  // its cache entry has expired: check again
   g.reset();                     // the cache was cleared: check again
   CHECK(g.due({1, 1}, 3000));
+  g.retryAfter({3, 1}, 5000, 1000);  // could not ask: try again in a second, not at once
+  CHECK(!g.due({3, 1}, 5500));
+  CHECK(g.due({3, 1}, 6000));
 }
 
 TEST(yield_probe_queue_same_hover_cell_once) {

@@ -487,6 +487,7 @@ RECT monitorRect(HWND hwnd) {
 
 void pumpProbes(App& app) {
   if (!app.probeThread) return;
+  if (petwin::ProbeThread::stuck() >= 3) return;  // several programs are hanging: wait for them
   if (!yieldActive(app)) {  // hidden, switched off or click-through: stop asking other programs
     app.probes.clear();
     return;
@@ -542,8 +543,10 @@ void hoverCheck(App& app) {
   if (app.probes.busy() && GetTickCount64() - app.probeSince > 2000) {  // a program did not answer
     ++app.probeToken;  // its late answer is ignored
     app.probes.done();
+    if (app.pendingJob.hover) app.hoverGate.mark(app.pendingJob.cell, nowMs());  // do not ask it again at once
     if (app.probeThread) app.probeThread->abandon();  // stuck in that call: let it finish on its own, carry on with a new one
     app.probeThread = petwin::ProbeThread::start(app.hwnd, WM_YIELD_PROBED);
+    pumpProbes(app);  // the rest of the queue goes on with the new thread
   }
   bool over = inside && yieldActive(app) && opaqueAt(app, p.x, p.y);
   pet::Cell cell = pet::cellAt(p.x, p.y);
@@ -1041,12 +1044,15 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_YIELD_PROBED:
       if (wp == app->probeToken && app->probes.busy()) {
-        app->yieldCache.put(app->pendingJob.cell, lp != 0, nowMs());
+        petwin::Probe result = (petwin::Probe)lp;
         app->probes.done();
-        if (app->pendingJob.hover) {
-          app->hoverGate.mark(app->pendingJob.cell, nowMs());
-          hoverCheck(*app);
+        if (result != petwin::Probe::Unknown) {
+          app->yieldCache.put(app->pendingJob.cell, result == petwin::Probe::Clickable, nowMs());
+          if (app->pendingJob.hover) app->hoverGate.mark(app->pendingJob.cell, nowMs());
+        } else if (app->pendingJob.hover) {  // "could not ask" is no answer: ask again in a second
+          app->hoverGate.retryAfter(app->pendingJob.cell, nowMs(), 1000);
         }
+        if (app->pendingJob.hover) hoverCheck(*app);
         pumpProbes(*app);
       }
       return 0;

@@ -12,13 +12,15 @@ namespace petwin {
 std::vector<pet::WindowInfo> windowsBelow(HWND pet, const RECT& region);
 // The topmost other program's window below `pet` that contains `pt`; nullptr if none.
 HWND windowBelowAt(HWND pet, POINT pt);
-// True when the accessible object of `w` at `pt`, or one of its three nearest containers, is
-// a clickable control. Hit-tests inside `w` itself, so the pet on top does not get in the way.
-// Needs COM on the calling thread.
-bool clickableIn(HWND w, POINT pt);
+// What is at `pt` inside `w`: the accessible object there, or one of its three nearest
+// containers, is a clickable control (Clickable) or not (Plain); Unknown when the program
+// could not be asked (not responding, or busy for more than 100 ms). Hit-tests inside `w`
+// itself, so the pet on top does not get in the way. Needs COM on the calling thread.
+enum class Probe { Plain = 0, Clickable = 1, Unknown = 2 };
+Probe clickableIn(HWND w, POINT pt);
 
 // A background thread with COM that runs one query at a time. The result is posted to
-// `notify` as message `msg`: wParam = token, lParam = 1 when clickable. A query into a
+// `notify` as message `msg`: wParam = token, lParam = (LPARAM)Probe. A query into a
 // program that stops responding can block for a long time, so the owner never deletes a
 // ProbeThread: abandon() tells it to stop, and the thread frees itself once its current
 // query returns (a stuck one is simply replaced by a new ProbeThread).
@@ -27,6 +29,8 @@ public:
   static ProbeThread* start(HWND notify, UINT msg);
   void submit(HWND pet, POINT pt, WPARAM token);
   void abandon();  // the object must not be used afterwards
+  // Abandoned threads still stuck in a query. Callers stop handing out work above a few.
+  static long stuck();
 
 private:
   ProbeThread(HWND notify, UINT msg);
