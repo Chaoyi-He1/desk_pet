@@ -30,6 +30,8 @@
 #include "win/bubble.h"
 #include "win/resource.h"
 #include "win/sprites.h"
+#include "win/yield_probe.h"
+#include "core/yield.h"
 
 namespace {
 
@@ -39,14 +41,16 @@ const wchar_t* kClass = L"BelfastPetWindow";
 const wchar_t* kMutex = L"Local\\BelfastPet.SingleInstance";
 const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t* kRunName = L"azure_lane_pet";
-const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3, ID_RESIZE = 4, ID_CHATTER = 5, ID_FADE = 6;
+const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3, ID_RESIZE = 4, ID_CHATTER = 5, ID_FADE = 6, ID_YIELD = 7,
+                ID_YIELD_SIG = 8, ID_YIELD_SCAN = 9;
 const UINT WM_TRAY = WM_APP + 1;
 const UINT WM_CHAT_DONE = WM_APP + 2;  // lParam: ChatResult* from the worker thread
+const UINT WM_YIELD_PROBED = WM_APP + 3;  // wParam: token, lParam: 1 = clickable (petwin::ProbeThread)
 const int kChatterChoices[] = {0, 10, 20, 30, 60};  // minutes; 0 = off
 enum {
   IDM_TOGGLE = 100, IDM_AUTOSTART, IDM_HIDE_FS, IDM_OPEN_ASSETS, IDM_EXIT,
   IDM_SIZE_UP, IDM_SIZE_DOWN, IDM_SIZE_RESET, IDM_CLICKTHROUGH,
-  IDM_RANDOM_SKIN, IDM_DAILY_RANDOM, IDM_CHAT, IDM_CHAT_SETTINGS,
+  IDM_RANDOM_SKIN, IDM_DAILY_RANDOM, IDM_CHAT, IDM_CHAT_SETTINGS, IDM_YIELD,
   IDM_CHATTER_BASE = 300, IDM_SIZE_BASE = 400, IDM_SKIN_BASE = 1000  // + ship * 100 + skin
 };
 
@@ -101,6 +105,18 @@ struct App {
   pet::Frame last;
   NOTIFYICONDATAW nid = {};
   HICON icon = nullptr;
+  // yield to controls behind her (docs/superpowers/specs/2026-09-30-yield-to-controls-design.md)
+  bool yieldOn = true, yieldApplied = false, pressing = false;
+  pet::CellCache yieldCache;
+  pet::ProbeQueue probes;
+  pet::HoverProbeGate hoverGate;
+  pet::YieldController yielder;
+  uint64_t windowsSig = 0;
+  int hoverMs = 0;
+  std::unique_ptr<petwin::ProbeThread> probeThread;
+  pet::ProbeJob pendingJob;
+  WPARAM probeToken = 0;
+  ULONGLONG probeSince = 0;
 };
 
 App* g_app = nullptr;
@@ -186,6 +202,7 @@ void writeSettings(const App& app) {
   out << "last_day=" << app.lastDay << "\n";
   out << "chatter=" << app.chatterMin << "\n";
   out << "clickthrough=" << (app.clickThrough ? 1 : 0) << "\n";
+  out << "yield=" << (app.yieldOn ? 1 : 0) << "\n";
   if (app.brain) out << "x=" << app.last.x << "\n";
 }
 
@@ -354,7 +371,8 @@ void present(App& app) {
   HGDIOBJ old = SelectObject(mem, app.cur.bmp);
   POINT pos = {app.curX, app.curY}, src = {0, 0};
   SIZE size = {app.cur.w, app.cur.h};
-  BLENDFUNCTION bf = {AC_SRC_OVER, 0, (BYTE)app.alpha, AC_SRC_ALPHA};
+  BYTE a = (BYTE)(app.alpha * (app.yieldApplied ? 77 : 255) / 255);  // see-through while yielding
+  BLENDFUNCTION bf = {AC_SRC_OVER, 0, a, AC_SRC_ALPHA};
   UpdateLayeredWindow(app.hwnd, screen, &pos, &size, mem, &src, 0, &bf, ULW_ALPHA);
   SelectObject(mem, old);
   DeleteDC(mem);
@@ -435,13 +453,109 @@ void updateHidden(App& app) {
 
 void applyClickThrough(App& app) {
   LONG_PTR ex = GetWindowLongPtrW(app.hwnd, GWL_EXSTYLE);
-  ex = app.clickThrough ? (ex | WS_EX_TRANSPARENT) : (ex & ~WS_EX_TRANSPARENT);
+  ex = (app.clickThrough || app.yieldApplied) ? (ex | WS_EX_TRANSPARENT) : (ex & ~WS_EX_TRANSPARENT);
   SetWindowLongPtrW(app.hwnd, GWL_EXSTYLE, ex);
 }
 
 void applyChatterTimer(App& app) {
   KillTimer(app.hwnd, ID_CHATTER);
   if (app.chatterMin > 0) SetTimer(app.hwnd, ID_CHATTER, (UINT)app.chatterMin * 60u * 1000u, nullptr);
+}
+
+// ---------- yield to controls behind her ----------
+
+int64_t nowMs() { return (int64_t)GetTickCount64(); }
+
+bool opaqueAt(const App& app, int x, int y) {
+  if (!app.cur.bmp) return false;
+  int lx = x - app.curX, ly = y - app.curY;
+  if (lx < 0 || ly < 0 || lx >= app.cur.w || ly >= app.cur.h) return false;
+  DIBSECTION ds;
+  if (GetObjectW(app.cur.bmp, sizeof ds, &ds) != (int)sizeof ds || !ds.dsBm.bmBits) return false;
+  const uint8_t* row = (const uint8_t*)ds.dsBm.bmBits + (size_t)ly * ds.dsBm.bmWidthBytes;  // top-down DIB
+  return row[lx * 4 + 3] > 24;
+}
+
+bool yieldActive(const App& app) { return app.yieldOn && !app.clickThrough && app.brain && app.last.visible; }
+
+RECT monitorRect(HWND hwnd) {
+  HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+  MONITORINFO mi = {sizeof(mi)};
+  if (GetMonitorInfoW(mon, &mi)) return mi.rcMonitor;
+  return RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+}
+
+void pumpProbes(App& app) {
+  if (!app.probeThread) return;
+  pet::ProbeJob job;
+  if (!app.probes.next(&job)) return;
+  app.pendingJob = job;
+  app.probeSince = GetTickCount64();
+  app.probeThread->submit(app.hwnd, POINT{job.x, job.y}, ++app.probeToken);
+}
+
+void yieldWatchWindows(App& app) {
+  if (!yieldActive(app)) return;
+  RECT m = monitorRect(app.hwnd);
+  RECT region = {m.left, app.curY, m.right, m.bottom};  // the strip she lives in
+  uint64_t sig = pet::windowSignature(petwin::windowsBelow(app.hwnd, region));
+  if (sig != app.windowsSig) {
+    app.windowsSig = sig;
+    app.yieldCache.clear();
+    app.probes.clearScan();
+  }
+}
+
+void yieldScan(App& app) {
+  if (!yieldActive(app) || !app.cur.bmp) return;
+  std::vector<pet::Cell> cells = pet::footprint(app.curX, app.curY, app.curX + app.cur.w, app.curY + app.cur.h,
+                                                [&](int x, int y) { return opaqueAt(app, x, y); });
+  app.probes.requestScan(app.yieldCache.stale(cells, nowMs(), 80));
+  pumpProbes(app);
+}
+
+void applyYield(App& app, bool y) {
+  if (y == app.yieldApplied) return;
+  app.yieldApplied = y;
+  applyClickThrough(app);
+  if (IsWindowVisible(app.hwnd)) present(app);
+}
+
+void setHoverTimer(App& app, int ms) {
+  if (ms == app.hoverMs) return;
+  app.hoverMs = ms;
+  SetTimer(app.hwnd, ID_YIELD, (UINT)ms, nullptr);
+}
+
+void hoverCheck(App& app) {
+  if (!app.brain) return;
+  POINT p;
+  GetCursorPos(&p);
+  bool inside = app.cur.bmp && p.x >= app.curX && p.x < app.curX + app.cur.w && p.y >= app.curY &&
+                p.y < app.curY + app.cur.h;
+  setHoverTimer(app, inside ? 83 : 250);
+  if (app.probes.busy() && GetTickCount64() - app.probeSince > 2000) {  // a program did not answer
+    ++app.probeToken;  // its late answer is ignored
+    app.probes.done();
+  }
+  bool over = inside && yieldActive(app) && opaqueAt(app, p.x, p.y);
+  pet::Cell cell = pet::cellAt(p.x, p.y);
+  if (!over) {
+    app.hoverGate.reset();
+  } else if (app.hoverGate.due(cell)) {
+    app.hoverGate.mark(cell);
+    app.probes.requestHover(cell, p.x, p.y);
+    pumpProbes(app);
+  }
+  pet::YieldInput in;
+  in.enabled = app.yieldOn;
+  in.clickThrough = app.clickThrough;
+  in.visible = app.last.visible;
+  in.pressed = app.pressing;
+  in.overPet = over;
+  in.modifier = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+  in.cell = over ? app.yieldCache.get(cell, nowMs()) : pet::CellState::Unknown;
+  applyYield(app, app.yielder.update(in, nowMs()));
 }
 
 // Loads skin `skin` of ship `ship` at the current size. The pet keeps its x position.
@@ -745,6 +859,7 @@ void showMenu(App& app) {
   AppendMenuW(m, MF_STRING, IDM_CHAT_SETTINGS, L"聊天设置…(&G)");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING | (app.clickThrough ? MF_CHECKED : 0), IDM_CLICKTHROUGH, L"鼠标穿透（用托盘图标关闭）(&P)");
+  AppendMenuW(m, MF_STRING | (app.yieldOn ? MF_CHECKED : 0), IDM_YIELD, L"遇到按钮时让开（按住 Alt 可点她）(&Y)");
   AppendMenuW(m, MF_STRING | (app.hideOnFullscreen ? MF_CHECKED : 0), IDM_HIDE_FS, L"全屏时自动隐藏(&F)");
   AppendMenuW(m, MF_STRING | (autostartEnabled() ? MF_CHECKED : 0), IDM_AUTOSTART, L"开机自动启动(&A)");
   AppendMenuW(m, MF_STRING, IDM_OPEN_ASSETS, L"打开素材文件夹(&O)");
@@ -764,6 +879,12 @@ void showMenu(App& app) {
     case IDM_HIDE_FS:
       app.hideOnFullscreen = !app.hideOnFullscreen;
       if (!app.hideOnFullscreen && app.fsHidden) { app.fsHidden = false; updateHidden(app); }
+      break;
+    case IDM_YIELD:
+      app.yieldOn = !app.yieldOn;
+      app.yieldCache.clear();
+      hoverCheck(app);
+      writeSettings(app);
       break;
     case IDM_CLICKTHROUGH:
       app.clickThrough = !app.clickThrough;
@@ -851,7 +972,13 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (!app || app->hwnd != h) return DefWindowProcW(h, msg, wp, lp);
   switch (msg) {
     case WM_TIMER:
-      if (wp == ID_ANIM) {
+      if (wp == ID_YIELD) {
+        hoverCheck(*app);
+      } else if (wp == ID_YIELD_SIG) {
+        yieldWatchWindows(*app);
+      } else if (wp == ID_YIELD_SCAN) {
+        yieldScan(*app);
+      } else if (wp == ID_ANIM) {
         ULONGLONG now = GetTickCount64();
         int dt = (int)(now - app->lastTick);
         app->lastTick = now;
@@ -865,6 +992,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
           app->brain->move(p.x, p.y);
         } else {
+          app->pressing = false;
           KillTimer(h, ID_DRAG);
           if (GetCapture() == h) ReleaseCapture();
           app->brain->release();
@@ -905,7 +1033,16 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
       }
       return 0;
+    case WM_YIELD_PROBED:
+      if (wp == app->probeToken && app->probes.busy()) {
+        app->yieldCache.put(app->pendingJob.cell, lp != 0, nowMs());
+        app->probes.done();
+        if (app->pendingJob.hover) hoverCheck(*app);
+        pumpProbes(*app);
+      }
+      return 0;
     case WM_LBUTTONDOWN: {
+      app->pressing = true;
       SetCapture(h);
       POINT p;
       GetCursorPos(&p);
@@ -914,6 +1051,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     }
     case WM_LBUTTONUP:
+      app->pressing = false;
       KillTimer(h, ID_DRAG);
       if (GetCapture() == h) ReleaseCapture();
       app->brain->release();
@@ -1016,6 +1154,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   app.lastDay = saved.get("", "last_day", "");
   app.chatterMin = saved.getInt("", "chatter", app.chatterMin);
   app.clickThrough = saved.getInt("", "clickthrough", 0) != 0;
+  app.yieldOn = saved.getInt("", "yield", 1) != 0;
   app.savedX = saved.getInt("", "x", app.savedX);
 
   scanShips(app);
@@ -1065,6 +1204,10 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   applyClickThrough(app);
   addTray(app);
   SetTimer(app.hwnd, ID_WATCH, 2000, nullptr);
+  app.probeThread.reset(new petwin::ProbeThread(app.hwnd, WM_YIELD_PROBED));
+  setHoverTimer(app, 250);
+  SetTimer(app.hwnd, ID_YIELD_SIG, 2000, nullptr);
+  SetTimer(app.hwnd, ID_YIELD_SCAN, 10000, nullptr);
   applyChatterTimer(app);
   say(app, pet::Scene::Login);
 
