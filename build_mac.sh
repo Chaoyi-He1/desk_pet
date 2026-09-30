@@ -8,7 +8,7 @@ mkdir -p build/mac "$APP/Contents/MacOS" "$APP/Contents/Resources"
 clang++ -std=c++17 -ObjC++ -fobjc-arc -O2 -Wall -Wextra -Wno-unused-parameter \
   -mmacosx-version-min=12.0 -arch arm64 -arch x86_64 -I src \
   src/core/*.cpp src/mac/*.mm \
-  -framework Cocoa -framework QuartzCore -framework ImageIO -framework ServiceManagement -framework CoreGraphics -framework IOSurface \
+  -framework Cocoa -framework QuartzCore -framework ImageIO -framework ServiceManagement -framework CoreGraphics -framework IOSurface -framework ApplicationServices \
   -o "$APP/Contents/MacOS/azure_lane_pet"
 cp src/mac/Info.plist "$APP/Contents/Info.plist"
 
