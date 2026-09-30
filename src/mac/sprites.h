@@ -94,6 +94,10 @@ private:
   std::vector<std::vector<std::string>> paths_[(int)pet::Anim::Count];
   std::vector<std::string> names_[(int)pet::Anim::Count];  // folder of each variant
   std::map<std::tuple<int, int, int>, Cached> cache_;
+  // The last streamed frame a hit test decoded: a footprint scan or a burst of hover checks
+  // on the frame being shown then costs one decode, not one per point.
+  std::tuple<int, int, int> hitKey_{-1, -1, -1};
+  Cached hitFrame_;
   std::vector<unsigned char> scratch_;  // full-frame decode buffer
   // Animated frames are expanded into one of two canvas-sized IOSurfaces (alternating,
   // so Core Animation always gets a surface it is not showing); no per-frame images.

@@ -113,7 +113,7 @@ struct App {
   pet::YieldController yielder;
   uint64_t windowsSig = 0;
   int hoverMs = 0;
-  std::unique_ptr<petwin::ProbeThread> probeThread;
+  petwin::ProbeThread* probeThread = nullptr;  // never deleted: see ProbeThread::abandon
   pet::ProbeJob pendingJob;
   WPARAM probeToken = 0;
   ULONGLONG probeSince = 0;
@@ -487,6 +487,10 @@ RECT monitorRect(HWND hwnd) {
 
 void pumpProbes(App& app) {
   if (!app.probeThread) return;
+  if (!yieldActive(app)) {  // hidden, switched off or click-through: stop asking other programs
+    app.probes.clear();
+    return;
+  }
   pet::ProbeJob job;
   if (!app.probes.next(&job)) return;
   app.pendingJob = job;
@@ -497,17 +501,18 @@ void pumpProbes(App& app) {
 void yieldWatchWindows(App& app) {
   if (!yieldActive(app)) return;
   RECT m = monitorRect(app.hwnd);
-  RECT region = {m.left, app.curY, m.right, m.bottom};  // the strip she lives in
+  RECT region = {m.left, app.last.y, m.right, m.bottom};  // the strip she lives in (from her canvas top)
   uint64_t sig = pet::windowSignature(petwin::windowsBelow(app.hwnd, region));
   if (sig != app.windowsSig) {
     app.windowsSig = sig;
     app.yieldCache.clear();
     app.probes.clearScan();
+    app.hoverGate.reset();  // re-check the cell under a resting cursor
   }
 }
 
 void yieldScan(App& app) {
-  if (!yieldActive(app) || !app.cur.bmp) return;
+  if (!yieldActive(app) || !app.cur.bmp || app.probes.scanning()) return;
   std::vector<pet::Cell> cells = pet::footprint(app.curX, app.curY, app.curX + app.cur.w, app.curY + app.cur.h,
                                                 [&](int x, int y) { return opaqueAt(app, x, y); });
   app.probes.requestScan(app.yieldCache.stale(cells, nowMs(), 80));
@@ -537,13 +542,14 @@ void hoverCheck(App& app) {
   if (app.probes.busy() && GetTickCount64() - app.probeSince > 2000) {  // a program did not answer
     ++app.probeToken;  // its late answer is ignored
     app.probes.done();
+    if (app.probeThread) app.probeThread->abandon();  // stuck in that call: let it finish on its own, carry on with a new one
+    app.probeThread = petwin::ProbeThread::start(app.hwnd, WM_YIELD_PROBED);
   }
   bool over = inside && yieldActive(app) && opaqueAt(app, p.x, p.y);
   pet::Cell cell = pet::cellAt(p.x, p.y);
   if (!over) {
     app.hoverGate.reset();
-  } else if (app.hoverGate.due(cell)) {
-    app.hoverGate.mark(cell);
+  } else if (app.hoverGate.due(cell, nowMs())) {  // marked when the check has finished
     app.probes.requestHover(cell, p.x, p.y);
     pumpProbes(app);
   }
@@ -1037,7 +1043,10 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       if (wp == app->probeToken && app->probes.busy()) {
         app->yieldCache.put(app->pendingJob.cell, lp != 0, nowMs());
         app->probes.done();
-        if (app->pendingJob.hover) hoverCheck(*app);
+        if (app->pendingJob.hover) {
+          app->hoverGate.mark(app->pendingJob.cell, nowMs());
+          hoverCheck(*app);
+        }
         pumpProbes(*app);
       }
       return 0;
@@ -1204,7 +1213,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   applyClickThrough(app);
   addTray(app);
   SetTimer(app.hwnd, ID_WATCH, 2000, nullptr);
-  app.probeThread.reset(new petwin::ProbeThread(app.hwnd, WM_YIELD_PROBED));
+  app.probeThread = petwin::ProbeThread::start(app.hwnd, WM_YIELD_PROBED);
   setHoverTimer(app, 250);
   SetTimer(app.hwnd, ID_YIELD_SIG, 2000, nullptr);
   SetTimer(app.hwnd, ID_YIELD_SCAN, 10000, nullptr);
@@ -1216,6 +1225,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
   }
+  if (app.probeThread) app.probeThread->abandon();
   if (app.icon) DestroyIcon(app.icon);
   CloseHandle(mutex);
   return 0;

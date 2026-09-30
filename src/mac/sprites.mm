@@ -407,12 +407,21 @@ bool SpriteSet::hitTest(double x, double y, bool mirrored, Anim a, int variant, 
   int ai = paths_[(int)a].empty() ? (int)Anim::Idle : (int)a;
   int v = (int)((size_t)variant % paths_[ai].size());
   int i = (int)((size_t)index % paths_[ai][v].size());
-  const Cached* c = decode(ai, v, i);
-  if (!c) return false;
-  struct Drop {  // streamed states are not kept in the cache
-    SpriteSet* s; std::tuple<int, int, int> k; bool on;
-    ~Drop() { if (on) s->cache_.erase(k); }
-  } drop{this, std::make_tuple(ai, v, i), stream_ || (ai != (int)Anim::Idle && ai != (int)Anim::Walk)};
+  auto key = std::make_tuple(ai, v, i);
+  const Cached* c;
+  if (stream_ || (ai != (int)Anim::Idle && ai != (int)Anim::Walk)) {  // streamed: not kept in cache_
+    if (key != hitKey_) {
+      if (!decode(ai, v, i)) return false;
+      auto it = cache_.find(key);
+      hitFrame_ = std::move(it->second);
+      cache_.erase(it);
+      hitKey_ = key;
+    }
+    c = &hitFrame_;
+  } else {
+    c = decode(ai, v, i);
+    if (!c) return false;
+  }
   if (mirrored) x = cw_ - x;
   int sx = (int)(x / s_) - c->x0;
   int sy = (int)((ch_ - y) / s_) - c->y0;

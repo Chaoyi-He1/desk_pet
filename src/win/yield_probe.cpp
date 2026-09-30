@@ -88,6 +88,10 @@ HWND windowBelowAt(HWND pet, POINT pt) {
 
 bool clickableIn(HWND w, POINT pt) {
   if (!w) return false;
+  // A program that is not responding would block the accessibility calls: skip it.
+  if (IsHungAppWindow(w)) return false;
+  DWORD_PTR answer = 0;
+  if (!SendMessageTimeoutW(w, WM_NULL, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &answer)) return false;
   IAccessible* acc = nullptr;
   if (FAILED(AccessibleObjectFromWindow(w, (DWORD)OBJID_CLIENT, IID_IAccessible, (void**)&acc)) || !acc) return false;
   long childId = CHILDID_SELF;
@@ -134,21 +138,31 @@ bool clickableIn(HWND w, POINT pt) {
   return found;
 }
 
+ProbeThread* ProbeThread::start(HWND notify, UINT msg) {
+  ProbeThread* t = new ProbeThread(notify, msg);
+  t->thread_ = CreateThread(nullptr, 0, &ProbeThread::main, t, 0, nullptr);
+  if (!t->thread_) {
+    delete t;
+    return nullptr;
+  }
+  return t;
+}
+
 ProbeThread::ProbeThread(HWND notify, UINT msg) : notify_(notify), msg_(msg) {
   InitializeCriticalSection(&lock_);
   InitializeConditionVariable(&wake_);
-  thread_ = CreateThread(nullptr, 0, &ProbeThread::main, this, 0, nullptr);
 }
 
-ProbeThread::~ProbeThread() {
+ProbeThread::~ProbeThread() {  // only ever run by the thread itself, or when it never started
+  DeleteCriticalSection(&lock_);
+  if (thread_) CloseHandle(thread_);
+}
+
+void ProbeThread::abandon() {
   EnterCriticalSection(&lock_);
   quit_ = true;
   LeaveCriticalSection(&lock_);
   WakeConditionVariable(&wake_);
-  // A hung program being queried must not hold up quitting: wait briefly, then let the
-  // process exit take the thread (and leave the lock alone while it may still use it).
-  if (thread_ && WaitForSingleObject(thread_, 500) == WAIT_OBJECT_0) DeleteCriticalSection(&lock_);
-  if (thread_) CloseHandle(thread_);
 }
 
 void ProbeThread::submit(HWND pet, POINT pt, WPARAM token) {
@@ -177,9 +191,13 @@ DWORD WINAPI ProbeThread::main(LPVOID p) {
     self->has_ = false;
     LeaveCriticalSection(&self->lock_);
     bool clickable = clickableIn(windowBelowAt(pet, pt), pt);
-    PostMessageW(self->notify_, self->msg_, token, clickable ? 1 : 0);
+    EnterCriticalSection(&self->lock_);
+    bool quit = self->quit_;
+    LeaveCriticalSection(&self->lock_);
+    if (!quit) PostMessageW(self->notify_, self->msg_, token, clickable ? 1 : 0);
   }
   CoUninitialize();
+  delete self;  // abandoned: nobody else holds it any more
   return 0;
 }
 

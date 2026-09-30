@@ -348,11 +348,11 @@ struct Ship {
     return;
   }
   panel_.ignoresMouseEvents = clickThrough_;
+  [self startYield];  // before the status menu: it shows whether the permission is missing
   [self createStatusItem];
   watchTimer_ = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(watch) userInfo:nil repeats:YES];
   watchTimer_.tolerance = 0.5;
   [self applyChatterTimer];
-  [self startYield];
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(screenChanged)
                                                name:NSApplicationDidChangeScreenParametersNotification
@@ -1089,7 +1089,11 @@ struct Ship {
 // Windows below the strip she lives in (her screen's width, from her top down): any change
 // clears the cache.
 - (void)yieldWatchWindows {
-  axTrusted_ = petmac::axTrusted(false);
+  bool trusted = petmac::axTrusted(false);
+  if (trusted != axTrusted_) {  // granted or revoked in System Settings
+    axTrusted_ = trusted;
+    [self refreshMenu];
+  }
   if (![self yieldActive]) return;
   NSRect f = panel_.frame, s = [self petScreen].frame;
   CGFloat sh = screenH();
@@ -1099,11 +1103,12 @@ struct Ship {
     windowsSig_ = sig;
     yieldCache_.clear();
     probes_.clearScan();
+    hoverGate_.reset();  // re-check the cell under a resting cursor
   }
 }
 
 - (void)yieldScan {
-  if (![self yieldActive]) return;
+  if (![self yieldActive] || probes_.scanning()) return;
   NSRect f = panel_.frame;
   CGFloat sh = screenH();
   std::vector<pet::Cell> cells =
@@ -1114,6 +1119,10 @@ struct Ship {
 }
 
 - (void)pumpProbes {
+  if (![self yieldActive]) {  // hidden, switched off or click-through: stop asking other apps
+    probes_.clear();
+    return;
+  }
   pet::ProbeJob job;
   if (!probes_.next(&job)) return;
   CGWindowID below = (CGWindowID)panel_.windowNumber;
@@ -1123,7 +1132,10 @@ struct Ship {
     dispatch_async(dispatch_get_main_queue(), ^{
       yieldCache_.put(job.cell, clickable, nowMs());
       probes_.done();
-      if (job.hover) [self hoverCheck];
+      if (job.hover) {
+        hoverGate_.mark(job.cell, nowMs());
+        [self hoverCheck];
+      }
       [self pumpProbes];
     });
   });
@@ -1141,8 +1153,7 @@ struct Ship {
   pet::Cell cell = pet::cellAt((int)x, (int)y);
   if (!over) {
     hoverGate_.reset();
-  } else if (hoverGate_.due(cell)) {
-    hoverGate_.mark(cell);
+  } else if (hoverGate_.due(cell, nowMs())) {  // marked when the check has finished
     probes_.requestHover(cell, (int)x, (int)y);
     [self pumpProbes];
   }

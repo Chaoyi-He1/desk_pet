@@ -56,6 +56,7 @@ uint64_t windowSignature(const std::vector<WindowInfo>& windows) {
 }
 
 void ProbeQueue::requestHover(Cell c, int x, int y) {
+  if (busy_ && current_.hover && current_.cell == c) return;  // being checked right now
   hover_.cell = c;
   hover_.x = x;
   hover_.y = y;

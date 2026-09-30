@@ -855,14 +855,40 @@ TEST(yield_probe_queue_hover_first_one_at_a_time) {
   CHECK(q.next(&j) && j.cell == (Cell{9, 9}));
 }
 
-TEST(yield_hover_gate_once_per_cell) {
-  HoverProbeGate g;
-  CHECK(g.due({1, 1}));
-  g.mark({1, 1});
-  CHECK(!g.due({1, 1}));
-  CHECK(g.due({2, 1}));
-  g.reset();
-  CHECK(g.due({1, 1}));
+TEST(yield_hover_gate_once_per_cell_until_expiry) {
+  HoverProbeGate g(60000);
+  CHECK(g.due({1, 1}, 0));
+  g.mark({1, 1}, 1000);
+  CHECK(!g.due({1, 1}, 2000));
+  CHECK(g.due({2, 1}, 2000));
+  CHECK(g.due({1, 1}, 61000));  // its cache entry has expired: check again
+  g.reset();                     // the cache was cleared: check again
+  CHECK(g.due({1, 1}, 3000));
+}
+
+TEST(yield_probe_queue_same_hover_cell_once) {
+  ProbeQueue q;
+  ProbeJob j;
+  q.requestHover({5, 5}, 85, 90);
+  CHECK(q.next(&j));
+  q.requestHover({5, 5}, 86, 91);  // that cell is being checked right now: nothing new
+  q.done();
+  CHECK(!q.next(&j));
+  q.requestHover({6, 5}, 100, 90);
+  q.requestHover({7, 5}, 120, 90);  // the newer cell replaces the older request
+  CHECK(q.next(&j) && j.cell == (Cell{7, 5}));
+  q.done();
+  CHECK(!q.next(&j));
+}
+
+TEST(yield_probe_queue_clear_drops_everything_pending) {
+  ProbeQueue q;
+  ProbeJob j;
+  q.requestScan({{0, 0}, {1, 0}});
+  q.requestHover({5, 5}, 85, 90);
+  q.clear();
+  CHECK(!q.next(&j));
+  CHECK(!q.scanning());
 }
 
 TEST(yield_controller_decisions) {

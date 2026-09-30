@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <set>
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -78,8 +78,9 @@ struct ProbeJob {
   bool hover = false;
 };
 
-// At most one query in flight. A new hover request replaces an older one; a scan is a
-// batch of cells and a new batch is ignored until the current one is done.
+// At most one query in flight. A new hover request replaces an older one (and is dropped
+// when that cell is being checked right now); a scan is a batch of cells and a new batch is
+// ignored until the current one is done.
 class ProbeQueue {
 public:
   void requestHover(Cell c, int x, int y);
@@ -89,6 +90,10 @@ public:
   bool busy() const { return busy_; }
   bool scanning() const { return !scan_.empty() || (busy_ && !current_.hover); }
   void clearScan() { scan_.clear(); }
+  void clear() {  // everything not yet started (the query in flight still finishes)
+    scan_.clear();
+    hasHover_ = false;
+  }
 
 private:
   std::deque<Cell> scan_;
@@ -96,15 +101,23 @@ private:
   ProbeJob hover_, current_;
 };
 
-// Live checks during one hover: each cell once.
+// Live checks while hovering: a cell is checked once, and again when that check is older than
+// `ttlMs` (its cache entry has expired) or after reset() (the cache was cleared, or the cursor
+// left her). mark() is called when a check has finished, so a request that was replaced
+// before it ran does not count.
 class HoverProbeGate {
 public:
-  bool due(Cell c) const { return checked_.count(c) == 0; }
-  void mark(Cell c) { checked_.insert(c); }
+  explicit HoverProbeGate(int64_t ttlMs = 60000) : ttl_(ttlMs) {}
+  bool due(Cell c, int64_t nowMs) const {
+    auto it = checked_.find(c);
+    return it == checked_.end() || nowMs - it->second >= ttl_;
+  }
+  void mark(Cell c, int64_t nowMs) { checked_[c] = nowMs; }
   void reset() { checked_.clear(); }
 
 private:
-  std::set<Cell> checked_;
+  std::map<Cell, int64_t> checked_;
+  int64_t ttl_;
 };
 
 struct YieldInput {

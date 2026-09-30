@@ -18,16 +18,21 @@ HWND windowBelowAt(HWND pet, POINT pt);
 bool clickableIn(HWND w, POINT pt);
 
 // A background thread with COM that runs one query at a time. The result is posted to
-// `notify` as message `msg`: wParam = token, lParam = 1 when clickable.
+// `notify` as message `msg`: wParam = token, lParam = 1 when clickable. A query into a
+// program that stops responding can block for a long time, so the owner never deletes a
+// ProbeThread: abandon() tells it to stop, and the thread frees itself once its current
+// query returns (a stuck one is simply replaced by a new ProbeThread).
 class ProbeThread {
 public:
+  static ProbeThread* start(HWND notify, UINT msg);
+  void submit(HWND pet, POINT pt, WPARAM token);
+  void abandon();  // the object must not be used afterwards
+
+private:
   ProbeThread(HWND notify, UINT msg);
   ~ProbeThread();
   ProbeThread(const ProbeThread&) = delete;
   ProbeThread& operator=(const ProbeThread&) = delete;
-  void submit(HWND pet, POINT pt, WPARAM token);
-
-private:
   static DWORD WINAPI main(LPVOID self);
   HWND notify_;
   UINT msg_;
