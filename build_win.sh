@@ -12,7 +12,7 @@ mkdir -p build/win "$OUT"
   -municode -mwindows -static -static-libgcc -static-libstdc++ \
   -I src src/core/*.cpp src/win/*.cpp build/win/resource.o \
   -o "$OUT/azure_lane_pet.exe" \
-  -lgdiplus -lgdi32 -luser32 -lshell32 -ladvapi32 -lole32 -lwinhttp
+  -lgdiplus -lgdi32 -luser32 -lshell32 -ladvapi32 -lole32 -lwinhttp -loleacc -loleaut32 -ldwmapi -luuid
 x86_64-w64-mingw32-strip "$OUT/azure_lane_pet.exe" 2>/dev/null || true
 
 rm -rf "$OUT/assets"
