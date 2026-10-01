@@ -928,6 +928,80 @@ TEST(yield_controller_decisions) {
   CHECK(!y.update(in, 660));
 }
 
+static ElementFacts facts(ElementKind k, int w, int h, bool own = false) {
+  ElementFacts e;
+  e.kind = k;
+  e.ownAction = own;
+  e.hasSize = w > 0;
+  e.w = w;
+  e.h = h;
+  return e;
+}
+
+TEST(yield_judge_element_sizes_measured_on_mac) {
+  // Real controls (Chrome toolbar, Dock, Lark toolbar, Claude sidebar) are clickable by role.
+  CHECK(judgeElement(facts(ElementKind::Control, 26, 26)) == Judgement::Clickable);
+  CHECK(judgeElement(facts(ElementKind::Control, 38, 50)) == Judgement::Clickable);
+  CHECK(judgeElement(facts(ElementKind::Control, 600, 32)) == Judgement::Clickable);  // a wide row button
+  CHECK(judgeElement(facts(ElementKind::Control, 0, 0)) == Judgement::Clickable);     // size unknown
+  CHECK(judgeElement(facts(ElementKind::Control, 700, 400)) == Judgement::Plain);     // an invisible full-pane overlay
+  // Text inputs: composers and fields yes; a whole Terminal or editor no.
+  CHECK(judgeElement(facts(ElementKind::Text, 492, 20)) == Judgement::Clickable);
+  CHECK(judgeElement(facts(ElementKind::Text, 980, 250)) == Judgement::Clickable);
+  CHECK(judgeElement(facts(ElementKind::Text, 1511, 797)) == Judgement::Plain);
+  CHECK(judgeElement(facts(ElementKind::Text, 0, 0)) == Judgement::Plain);
+  // A group with its own press action: small click targets yes (Claude's 496x24 composer row,
+  // a 212x20 sidebar label); the 614x731 chat feed with a click handler is not a control, look higher.
+  CHECK(judgeElement(facts(ElementKind::Other, 496, 24, true)) == Judgement::Clickable);
+  CHECK(judgeElement(facts(ElementKind::Other, 212, 20, true)) == Judgement::Clickable);
+  CHECK(judgeElement(facts(ElementKind::Other, 600, 200, true)) == Judgement::Clickable);  // the limits
+  CHECK(judgeElement(facts(ElementKind::Other, 614, 731, true)) == Judgement::Climb);
+  CHECK(judgeElement(facts(ElementKind::Other, 1500, 120, true)) == Judgement::Climb);
+  CHECK(judgeElement(facts(ElementKind::Other, 300, 220, true)) == Judgement::Climb);
+  CHECK(judgeElement(facts(ElementKind::Other, 0, 0, true)) == Judgement::Climb);
+  CHECK(judgeElement(facts(ElementKind::Other, 18, 18)) == Judgement::Climb);  // an icon image: its button decides
+  // Windows, web areas, scroll areas, lists: nothing above them is a control.
+  CHECK(judgeElement(facts(ElementKind::Container, 20, 20, true)) == Judgement::Plain);
+}
+
+TEST(yield_control_rects_cover_gaps_between_icons) {
+  ControlRects r(60000, 3);
+  const int64_t lark = 7, other = 8;
+  CHECK(!r.within(1260, 874, 10, lark, 0));
+  r.add({1252, 861, 1278, 887}, lark, 0);  // a 26x26 icon button in Lark's toolbar
+  CHECK(r.within(1260, 874, 10, lark, 0));
+  CHECK(r.within(1285, 874, 10, lark, 0));   // in the 12-pt gap to the next icon
+  CHECK(!r.within(1289, 874, 10, lark, 0));  // more than 10 away
+  CHECK(r.within(1260, 851, 10, lark, 0));   // margin above
+  CHECK(!r.within(1260, 850, 10, lark, 0));
+  CHECK(!r.within(1260, 874, 10, other, 0));  // another window covers it there now
+  CHECK(r.within(1260, 874, 10, lark, 59999));
+  CHECK(!r.within(1260, 874, 10, lark, 60000));  // expired after a minute
+  // the same rectangle again refreshes it instead of adding a copy
+  r.add({1252, 861, 1278, 887}, lark, 1000);
+  r.add({1252, 861, 1278, 887}, lark, 2000);
+  CHECK_EQ(r.size(), (size_t)1);
+  CHECK(r.within(1260, 874, 10, lark, 61999));
+  // full: the oldest goes
+  r.add({0, 0, 10, 10}, lark, 3000);
+  r.add({100, 0, 110, 10}, lark, 4000);
+  r.add({200, 0, 210, 10}, lark, 5000);
+  CHECK_EQ(r.size(), (size_t)3);
+  CHECK(!r.within(1260, 874, 10, lark, 5000));
+  CHECK(r.within(5, 5, 0, lark, 5000));
+  // a live check that finds no control inside a rectangle drops it; a miss in the margin does not,
+  // nor one in a window that covers part of it
+  r.forgetAt(105, 15, lark);
+  CHECK(r.within(105, 5, 0, lark, 5000));
+  r.forgetAt(105, 5, other);
+  CHECK(r.within(105, 5, 0, lark, 5000));
+  r.forgetAt(105, 5, lark);
+  CHECK(!r.within(105, 5, 0, lark, 5000));
+  CHECK(r.within(205, 5, 0, lark, 5000));
+  r.clear();
+  CHECK_EQ(r.size(), (size_t)0);
+}
+
 // ---------- frames ----------
 static const unsigned char kLz4In[] = {59,97,98,99,3,0,255,29,88,89,90,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,7,1,0,255,23,80,7,7,101,110,100};
 

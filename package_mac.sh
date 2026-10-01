@@ -23,6 +23,8 @@ azure_lane_pet 碧蓝航线桌面宠物（macOS 12 及以上，Apple 芯片和 I
 「和她聊天」需要自己的大模型 API key：右键 →「聊天设置…」填写。不填则完全不联网。
 NOTE
 rm -f dist/azure_lane_pet-mac.zip
+tools/sign_mac.sh "$STAGE/azure_lane_pet.app" adhoc  # copies for other people never carry the local certificate
 ditto -c -k --sequesterRsrc --keepParent "$STAGE" dist/azure_lane_pet-mac.zip.tmp
 mv dist/azure_lane_pet-mac.zip.tmp dist/azure_lane_pet-mac.zip
+tools/sign_mac.sh "$STAGE/azure_lane_pet.app"  # the staged copy may be run here; keep its grant
 echo "packaged dist/azure_lane_pet-mac.zip ($(du -h dist/azure_lane_pet-mac.zip | cut -f1))"

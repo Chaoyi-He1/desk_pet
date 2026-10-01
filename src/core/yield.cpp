@@ -87,6 +87,45 @@ bool ProbeQueue::next(ProbeJob* job) {
   return true;
 }
 
+Judgement judgeElement(const ElementFacts& e) {
+  switch (e.kind) {
+    case ElementKind::Container:
+      return Judgement::Plain;
+    case ElementKind::Control:  // no real button covers a whole pane
+      return e.hasSize && e.w > 640 && e.h > 320 ? Judgement::Plain : Judgement::Clickable;
+    case ElementKind::Text:  // fields and chat composers; not a whole terminal or editor
+      return e.hasSize && e.h <= 300 ? Judgement::Clickable : Judgement::Plain;
+    case ElementKind::Other:  // a clickable <div> of about her size or smaller, or a thin row
+      if (e.ownAction && e.hasSize && e.h <= 200 && (int64_t)e.w * e.h <= 120000) return Judgement::Clickable;
+      return Judgement::Climb;
+  }
+  return Judgement::Climb;
+}
+
+void ControlRects::add(const Rect& r, int64_t window, int64_t nowMs) {
+  for (auto it = list_.begin(); it != list_.end(); ++it)
+    if (it->window == window && it->r.left == r.left && it->r.top == r.top && it->r.right == r.right &&
+        it->r.bottom == r.bottom) {
+      list_.erase(it);
+      break;
+    }
+  list_.push_back({r, window, nowMs});
+  while (list_.size() > capacity_) list_.pop_front();
+}
+
+void ControlRects::forgetAt(int x, int y, int64_t window) {
+  for (auto it = list_.begin(); it != list_.end();)
+    it = (it->window == window && x >= it->r.left && x < it->r.right && y >= it->r.top && y < it->r.bottom) ? list_.erase(it) : it + 1;
+}
+
+bool ControlRects::within(int x, int y, int margin, int64_t window, int64_t nowMs) const {
+  for (const Entry& e : list_)
+    if (e.window == window && nowMs - e.stamp < ttl_ && x >= e.r.left - margin && x < e.r.right + margin && y >= e.r.top - margin &&
+        y < e.r.bottom + margin)
+      return true;
+  return false;
+}
+
 bool YieldController::update(const YieldInput& in, int64_t nowMs) {
   bool blocked = !in.enabled || in.clickThrough || !in.visible || in.pressed || in.modifier;
   bool want = !blocked && in.overPet && in.cell == CellState::Clickable;

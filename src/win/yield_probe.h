@@ -12,18 +12,21 @@ namespace petwin {
 std::vector<pet::WindowInfo> windowsBelow(HWND pet, const RECT& region);
 // The topmost other program's window below `pet` that contains `pt`; nullptr if none.
 HWND windowBelowAt(HWND pet, POINT pt);
-// What is at `pt` inside `w`: the accessible object there, or one of its three nearest
-// containers, is a clickable control (Clickable) or not (Plain); Unknown when the program
-// could not be asked (not responding, or busy for more than 100 ms). Hit-tests inside `w`
-// itself, so the pet on top does not get in the way. Needs COM on the calling thread.
-enum class Probe { Plain = 0, Clickable = 1, Unknown = 2 };
-Probe clickableIn(HWND w, POINT pt);
+// Pixels per 96-dpi pixel on the monitor of `w` (the pet's own window: it is per-monitor aware).
+double dipScale(HWND w);
+// What is at `pt` inside `w`: whether the accessible object there, or one of its five nearest
+// containers, is a control (pet::judgeElement, sizes divided by `scale`), with its rectangle
+// (VS Code-based editors are never asked: Plain);
+// Unknown when the program could not be asked (not responding, or busy for more than 100 ms)
+// or gave an answer that was out of date. Hit-tests inside `w` itself, so the pet on top does
+// not get in the way. Needs COM on the calling thread.
+pet::ProbeResult probeIn(HWND w, POINT pt, double scale);
 
 // A background thread with COM that runs one query at a time. The result is posted to
-// `notify` as message `msg`: wParam = token, lParam = (LPARAM)Probe. A query into a
-// program that stops responding can block for a long time, so the owner never deletes a
-// ProbeThread: abandon() tells it to stop, and the thread frees itself once its current
-// query returns (a stuck one is simply replaced by a new ProbeThread).
+// `notify` as message `msg`: wParam = token, lParam = a new pet::ProbeResult that the
+// receiver deletes. A query into a program that stops responding can block for a long time,
+// so the owner never deletes a ProbeThread: abandon() tells it to stop, and the thread frees
+// itself once its current query returns (a stuck one is simply replaced by a new ProbeThread).
 class ProbeThread {
 public:
   static ProbeThread* start(HWND notify, UINT msg);

@@ -241,10 +241,12 @@ struct Ship {
   // yield to controls behind her (docs/superpowers/specs/2026-09-30-yield-to-controls-design.md)
   bool yieldOn_, yieldApplied_, axTrusted_, pressing_;
   pet::CellCache yieldCache_;
+  pet::ControlRects controlRects_;
   pet::ProbeQueue probes_;
   pet::HoverProbeGate hoverGate_;
   pet::YieldController yielder_;
   uint64_t windowsSig_;
+  uint64_t yieldGen_;  // bumped when the caches are cleared: answers asked before that are dropped
   NSTimer* hoverTimer_;
   NSTimer* sigTimer_;
   NSTimer* scanTimer_;
@@ -300,6 +302,7 @@ struct Ship {
   yieldOn_ = saved.getInt("", "yield", 1) != 0;
   yieldApplied_ = pressing_ = axTrusted_ = false;
   windowsSig_ = 0;
+  yieldGen_ = 0;
   hoverInterval_ = 0;
   savedX_ = saved.getInt("", "x", savedX_);
   displayID_ = (CGDirectDisplayID)saved.getInt("", "display", 0);
@@ -1101,7 +1104,9 @@ struct Ship {
   uint64_t sig = pet::windowSignature(petmac::windowsBelow((CGWindowID)panel_.windowNumber, region));
   if (sig != windowsSig_) {
     windowsSig_ = sig;
+    ++yieldGen_;
     yieldCache_.clear();
+    controlRects_.clear();
     probes_.clearScan();
     hoverGate_.reset();  // re-check the cell under a resting cursor
   }
@@ -1126,16 +1131,28 @@ struct Ship {
   pet::ProbeJob job;
   if (!probes_.next(&job)) return;
   CGWindowID below = (CGWindowID)panel_.windowNumber;
+  uint64_t gen = yieldGen_;
   dispatch_async(probeQueue_, ^{
-    pid_t pid = petmac::ownerBelow(below, job.x, job.y);
-    bool clickable = pid > 0 && petmac::clickableInApp(pid, job.x, job.y);
+    pet::ProbeResult r = petmac::probeBelow(below, job.x, job.y);
     dispatch_async(dispatch_get_main_queue(), ^{
-      yieldCache_.put(job.cell, clickable, nowMs());
+      int64_t now = nowMs();
       probes_.done();
-      if (job.hover) {
-        hoverGate_.mark(job.cell, nowMs());
-        [self hoverCheck];
+      if (gen != yieldGen_) {  // asked about windows that have changed since: drop it
+        [self pumpProbes];
+        return;
       }
+      if (r.state == pet::CellState::Unknown) {  // the app did not answer: not cached, asked again
+        if (job.hover) hoverGate_.retryAfter(job.cell, now, 1000);
+      } else {
+        bool clickable = r.state == pet::CellState::Clickable;
+        yieldCache_.put(job.cell, clickable, now);
+        if (clickable)
+          controlRects_.add(r.rect, r.window, now);
+        else
+          controlRects_.forgetAt(job.x, job.y, r.window);
+        if (job.hover) hoverGate_.mark(job.cell, now);
+      }
+      if (job.hover) [self hoverCheck];
       [self pumpProbes];
     });
   });
@@ -1164,7 +1181,12 @@ struct Ship {
   in.pressed = pressing_;
   in.overPet = over;
   in.modifier = (NSEvent.modifierFlags & NSEventModifierFlagOption) != 0;
-  in.cell = over ? yieldCache_.get(cell, nowMs()) : pet::CellState::Unknown;
+  bool nearControl = false;
+  if (over && controlRects_.size()) {  // only controls of the window that is under the cursor now
+    int64_t win = petmac::windowBelowAt((CGWindowID)panel_.windowNumber, x, y).window;
+    nearControl = controlRects_.within((int)x, (int)y, pet::kNearControl, win, nowMs());
+  }
+  in.cell = !over ? pet::CellState::Unknown : nearControl ? pet::CellState::Clickable : yieldCache_.get(cell, nowMs());
   [self applyYield:yielder_.update(in, nowMs())];
 }
 
@@ -1187,7 +1209,9 @@ struct Ship {
 - (void)toggleYield:(id)s {
   yieldOn_ = !yieldOn_;
   axTrusted_ = petmac::axTrusted(yieldOn_);  // turning it on asks for the permission
+  ++yieldGen_;
   yieldCache_.clear();
+  controlRects_.clear();
   [self hoverCheck];
   [self writeSettings];
   [self refreshMenu];
@@ -1248,14 +1272,32 @@ static void brainPoint(NSEvent* e, int* x, int* y) {
 }
 
 - (void)maybeSnapshot {
-  if (const char* at = getenv("BELFASTPET_PROBE")) {  // debug aid: "x,y" (global, top-left) -> what is behind, then quit
-    double x = 0, y = 0;
-    sscanf(at, "%lf,%lf", &x, &y);
-    CGWindowID below = (CGWindowID)panel_.windowNumber;
+  // Debug aid: "x,y[;x,y...]" (global, top-left) -> what is behind each point, then quit. Below the
+  // window BELFASTPET_PROBE_BELOW (e.g. a running pet's) instead of this instance's own, or of the app
+  // BELFASTPET_PROBE_PID. BELFASTPET_PROBE_VERBOSE adds the element and its ancestors.
+  if (const char* at = getenv("BELFASTPET_PROBE")) {
+    std::string spec = at;
+    const char* bw = getenv("BELFASTPET_PROBE_BELOW");
+    CGWindowID below = bw ? (CGWindowID)atoll(bw) : (CGWindowID)panel_.windowNumber;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-      pid_t pid = petmac::ownerBelow(below, x, y);
-      bool clickable = pid > 0 && petmac::clickableInApp(pid, x, y);
-      fprintf(stderr, "probe %.0f,%.0f trusted=%d pid=%d clickable=%d\n", x, y, petmac::axTrusted(false), pid, clickable);
+      for (int pass = 0; pass < 2; ++pass) {  // the first pass wakes the apps up (Electron needs ~2 s)
+        if (pass == 1) usleep(3200000);
+        std::istringstream pts(spec);
+        std::string pt;
+        while (std::getline(pts, pt, ';')) {
+          double x = 0, y = 0;
+          if (sscanf(pt.c_str(), "%lf,%lf", &x, &y) != 2) continue;
+          const char* forced = getenv("BELFASTPET_PROBE_PID");  // ask this app even when it is not on top
+          pid_t pid = forced ? (pid_t)atoi(forced) : petmac::windowBelowAt(below, x, y).pid;
+          pet::ProbeResult r = petmac::probeAt(pid, x, y);
+          if (pass == 0) continue;
+          fprintf(stderr, "probe %.0f,%.0f trusted=%d pid=%d clickable=%d rect=%d,%d %dx%d\n", x, y,
+                  petmac::axTrusted(false), pid,
+                  r.state == pet::CellState::Clickable ? 1 : r.state == pet::CellState::Plain ? 0 : -1, r.rect.left,
+                  r.rect.top, r.rect.right - r.rect.left, r.rect.bottom - r.rect.top);
+          if (getenv("BELFASTPET_PROBE_VERBOSE")) fputs(petmac::describeAt(pid, x, y).c_str(), stderr);
+        }
+      }
       dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
     });
     return;

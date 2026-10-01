@@ -33,9 +33,10 @@ int main() {
     double sh = NSScreen.screens.firstObject.frame.size.height;  // Cocoa -> top-left y
     __block int button = -1, labelHit = -1, blank = -1;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-      button = petmac::clickableInApp(getpid(), 200 + 70, sh - (200 + 56));
-      labelHit = petmac::clickableInApp(getpid(), 200 + 230, sh - (200 + 56));
-      blank = petmac::clickableInApp(getpid(), 200 + 150, sh - (200 + 105));
+      auto clickable = [](pet::ProbeResult r) { return r.state == pet::CellState::Clickable ? 1 : 0; };
+      button = clickable(petmac::probeAt(getpid(), 200 + 70, sh - (200 + 56)));
+      labelHit = clickable(petmac::probeAt(getpid(), 200 + 230, sh - (200 + 56)));
+      blank = clickable(petmac::probeAt(getpid(), 200 + 150, sh - (200 + 105)));
     });
     NSDate* until = [NSDate dateWithTimeIntervalSinceNow:5];
     while (blank < 0 && [until timeIntervalSinceNow] > 0)

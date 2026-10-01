@@ -45,7 +45,7 @@ const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3, ID_RESIZE = 4, ID_CHATTER
                 ID_YIELD_SIG = 8, ID_YIELD_SCAN = 9;
 const UINT WM_TRAY = WM_APP + 1;
 const UINT WM_CHAT_DONE = WM_APP + 2;  // lParam: ChatResult* from the worker thread
-const UINT WM_YIELD_PROBED = WM_APP + 3;  // wParam: token, lParam: petwin::Probe (petwin::ProbeThread)
+const UINT WM_YIELD_PROBED = WM_APP + 3;  // wParam: token, lParam: new pet::ProbeResult (petwin::ProbeThread)
 const int kChatterChoices[] = {0, 10, 20, 30, 60};  // minutes; 0 = off
 enum {
   IDM_TOGGLE = 100, IDM_AUTOSTART, IDM_HIDE_FS, IDM_OPEN_ASSETS, IDM_EXIT,
@@ -108,6 +108,7 @@ struct App {
   // yield to controls behind her (docs/superpowers/specs/2026-09-30-yield-to-controls-design.md)
   bool yieldOn = true, yieldApplied = false, pressing = false;
   pet::CellCache yieldCache;
+  pet::ControlRects controlRects;
   pet::ProbeQueue probes;
   pet::HoverProbeGate hoverGate;
   pet::YieldController yielder;
@@ -115,6 +116,7 @@ struct App {
   int hoverMs = 0;
   petwin::ProbeThread* probeThread = nullptr;  // never deleted: see ProbeThread::abandon
   pet::ProbeJob pendingJob;
+  uint64_t yieldGen = 0, pendingGen = 0;  // bumped when the caches are cleared: older answers are dropped
   WPARAM probeToken = 0;
   ULONGLONG probeSince = 0;
 };
@@ -495,6 +497,7 @@ void pumpProbes(App& app) {
   pet::ProbeJob job;
   if (!app.probes.next(&job)) return;
   app.pendingJob = job;
+  app.pendingGen = app.yieldGen;
   app.probeSince = GetTickCount64();
   app.probeThread->submit(app.hwnd, POINT{job.x, job.y}, ++app.probeToken);
 }
@@ -506,7 +509,9 @@ void yieldWatchWindows(App& app) {
   uint64_t sig = pet::windowSignature(petwin::windowsBelow(app.hwnd, region));
   if (sig != app.windowsSig) {
     app.windowsSig = sig;
+    ++app.yieldGen;
     app.yieldCache.clear();
+    app.controlRects.clear();
     app.probes.clearScan();
     app.hoverGate.reset();  // re-check the cell under a resting cursor
   }
@@ -565,7 +570,13 @@ void hoverCheck(App& app) {
   in.pressed = app.pressing;
   in.overPet = over;
   in.modifier = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-  in.cell = over ? app.yieldCache.get(cell, nowMs()) : pet::CellState::Unknown;
+  bool nearControl = false;
+  if (over && app.controlRects.size()) {  // only controls of the window that is under the cursor now
+    int margin = (int)lround(pet::kNearControl * petwin::dipScale(app.hwnd));
+    int64_t win = (int64_t)(intptr_t)petwin::windowBelowAt(app.hwnd, p);
+    nearControl = app.controlRects.within(p.x, p.y, margin, win, nowMs());
+  }
+  in.cell = !over ? pet::CellState::Unknown : nearControl ? pet::CellState::Clickable : app.yieldCache.get(cell, nowMs());
   applyYield(app, app.yielder.update(in, nowMs()));
 }
 
@@ -893,7 +904,9 @@ void showMenu(App& app) {
       break;
     case IDM_YIELD:
       app.yieldOn = !app.yieldOn;
+      ++app.yieldGen;
       app.yieldCache.clear();
+      app.controlRects.clear();
       hoverCheck(app);
       writeSettings(app);
       break;
@@ -1044,20 +1057,32 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
       }
       return 0;
-    case WM_YIELD_PROBED:
-      if (wp == app->probeToken && app->probes.busy()) {
-        petwin::Probe result = (petwin::Probe)lp;
+    case WM_YIELD_PROBED: {
+      std::unique_ptr<pet::ProbeResult> r(reinterpret_cast<pet::ProbeResult*>(lp));  // ours to free, late or not
+      if (r && wp == app->probeToken && app->probes.busy()) {
+        const pet::ProbeJob& job = app->pendingJob;
+        int64_t now = nowMs();
         app->probes.done();
-        if (result != petwin::Probe::Unknown) {
-          app->yieldCache.put(app->pendingJob.cell, result == petwin::Probe::Clickable, nowMs());
-          if (app->pendingJob.hover) app->hoverGate.mark(app->pendingJob.cell, nowMs());
-        } else if (app->pendingJob.hover) {  // "could not ask" is no answer: ask again in a second
-          app->hoverGate.retryAfter(app->pendingJob.cell, nowMs(), 1000);
+        if (app->pendingGen != app->yieldGen) {  // asked about windows that have changed since: drop it
+          pumpProbes(*app);
+          return 0;
         }
-        if (app->pendingJob.hover) hoverCheck(*app);
+        if (r->state != pet::CellState::Unknown) {
+          bool clickable = r->state == pet::CellState::Clickable;
+          app->yieldCache.put(job.cell, clickable, now);
+          if (clickable)
+            app->controlRects.add(r->rect, r->window, now);
+          else
+            app->controlRects.forgetAt(job.x, job.y, r->window);
+          if (job.hover) app->hoverGate.mark(job.cell, now);
+        } else if (job.hover) {  // "could not ask" is no answer: ask again in a second
+          app->hoverGate.retryAfter(job.cell, now, 1000);
+        }
+        if (job.hover) hoverCheck(*app);
         pumpProbes(*app);
       }
       return 0;
+    }
     case WM_LBUTTONDOWN: {
       app->pressing = true;
       SetCapture(h);

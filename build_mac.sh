@@ -25,5 +25,6 @@ if command -v iconutil >/dev/null 2>&1 && command -v sips >/dev/null 2>&1; then
   done
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 fi
-codesign --force --sign - "$APP" 2>/dev/null || true
+# Local certificate when tools/setup_mac_signing.sh has been run (keeps the Accessibility grant), else ad-hoc.
+tools/sign_mac.sh "$APP" || true
 echo "built $APP"

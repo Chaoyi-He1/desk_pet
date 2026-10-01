@@ -10,6 +10,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/screen.h"
+
 namespace pet {
 
 // A square of the screen, kCellSize units wide (points on macOS, pixels on Windows).
@@ -62,6 +64,62 @@ std::vector<Cell> footprint(int left, int top, int right, int bottom, Opaque opa
     }
   return out;
 }
+
+// What an accessibility element is, as the shells read it from the platform API.
+enum class ElementKind {
+  Control,    // button, link, checkbox, tab, menu item, dock item...: clickable by its role
+  Text,       // an editable text field or text area
+  Container,  // window, web area, scroll area, list...: nothing at or above it is a control
+  Other,      // group, static text, image...: clickable only through an action of its own
+};
+struct ElementFacts {
+  ElementKind kind = ElementKind::Other;
+  bool ownAction = false;  // Other: its own press/open action (not one inherited from an ancestor)
+  bool hasSize = false;
+  int w = 0, h = 0;  // points on macOS, 96-dpi pixels on Windows
+};
+enum class Judgement { Clickable, Plain, Climb };
+// The element under the point is judged first, then up to three ancestors, until one answer is
+// not Climb. Web pages put click handlers on whole panes, and Terminal or an editor is one
+// big text area; neither is a control she needs to step aside for, so sizes matter.
+Judgement judgeElement(const ElementFacts& e);
+
+// The answer to one query. Unknown: the program could not be asked (busy, not responding); for
+// Clickable, `rect` is the control's screen rectangle.
+struct ProbeResult {
+  CellState state = CellState::Unknown;
+  Rect rect{0, 0, 0, 0};
+  int64_t window = 0;  // the window that was asked (CGWindowID / HWND)
+};
+// The cursor within this many points (macOS) or 96-dpi pixels (Windows) of a control found behind
+// her counts as on it.
+constexpr int kNearControl = 10;
+
+// Controls found behind her, by screen rectangle and window. Toolbar icons are smaller than a
+// cell and sit between the cells' probe points, and with her in front the user cannot see where
+// to aim; once one is found, the cursor within `margin` of it counts as on it, as long as the
+// window it was found in is the one under the cursor (another window may cover part of it).
+// Entries expire after `ttlMs`; when full, the oldest makes room.
+class ControlRects {
+public:
+  explicit ControlRects(int64_t ttlMs = 60000, size_t capacity = 256) : ttl_(ttlMs), capacity_(capacity) {}
+  void add(const Rect& r, int64_t window, int64_t nowMs);
+  void forgetAt(int x, int y, int64_t window);  // a live check in `window` found no control here: it has gone
+  // (x, y) is on or within `margin` of one found in `window`, the topmost window under the cursor
+  bool within(int x, int y, int margin, int64_t window, int64_t nowMs) const;
+  void clear() { list_.clear(); }
+  size_t size() const { return list_.size(); }
+
+private:
+  struct Entry {
+    Rect r;
+    int64_t window;
+    int64_t stamp;
+  };
+  std::deque<Entry> list_;  // oldest first
+  int64_t ttl_;
+  size_t capacity_;
+};
 
 // Another program's window below the pet: its id and bounds.
 struct WindowInfo {

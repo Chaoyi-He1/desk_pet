@@ -19,11 +19,25 @@ Q 版在屏幕底部走动时，经常停在其他程序的按钮、链接、输
 
 ## 什么算"可点的控件"
 
-取身后那一点的无障碍元素，检查它和往上最多 3 层父元素，满足任一条件即可点：
+（2026-09-30 修订：初版"元素或往上 3 层任一有按下动作/默认动作就算"太宽，网页里挂了点击事件的整块区域（Claude 的聊天记录区 614×731）和整个终端都被当成了可点；初版也没有考虑小图标之间的空隙。）
 
-- macOS：角色是 AXButton、AXLink、AXCheckBox、AXRadioButton、AXPopUpButton、AXMenuButton、AXComboBox、AXTextField、AXTextArea、AXMenuItem、AXMenuBarItem、AXDockItem、AXDisclosureTriangle、AXSlider、AXIncrementor 中的一种（标签页的标签本身是 AXRadioButton，已包含；整个标签页容器不算）；或支持 AXPress、AXOpen、AXConfirm、AXPick、AXIncrement 中的任一动作（AXShowMenu 太普遍，不算）。
-- Windows（MSAA）：角色是 PUSHBUTTON、LINK、CHECKBUTTON、RADIOBUTTON、COMBOBOX、BUTTONMENU、BUTTONDROPDOWN、SPLITBUTTON、MENUITEM、PAGETAB、LISTITEM、OUTLINEITEM、SLIDER，或可编辑的 TEXT；或有非空的默认动作（accDefaultAction）。
+取身后那一点的无障碍元素，从它开始往上最多看 6 层，逐层判断，遇到结论就停（规则在 `pet::judgeElement`，两个平台共用；尺寸单位是 macOS 的点、Windows 的 96-dpi 像素）：
+
+- **控件**：按钮、链接、复选框、单选框、弹出按钮、组合框、菜单项、标签页的标签、滑块、Dock 项、大纲行（Finder 列表、VS Code 的树）等。算可点；只有宽超过 640 且高超过 320 的（盖住整块面板的隐形按钮）不算。
+- **输入框**：macOS 的 AXTextField/AXTextArea；Windows 的 TEXT 且可获得焦点、非只读、非禁用。高不超过 300 才算（单行框和聊天输入框算，整个终端、编辑器不算）。
+- **容器**：窗口、网页区域、滚动区、列表、表格、大纲、标签栏、工具栏等。到这里就停，不可点。
+- **其他**（分组、文字、图片……）：macOS 上它自己有 AXPress/AXOpen/AXPick 动作，且高不超过 200、面积不超过 120000，才算可点（网页里挂了点击事件的小块，例如 Claude 的输入框外框 496×24）；否则继续往上看。Chromium 只给挂了监听器的元素本身 AXPress，不给它的子元素。Windows 上默认动作不作数：Chromium 给点击区域里的每个子元素都报"click ancestor"（还随语言翻译），所以 Windows 只认角色。
+- Windows 的列表项要非只读（网页的 `<li>` 是只读的，桌面图标、列表框选项不是）。
 - 属于桌宠自己进程的元素（台词气泡、聊天框）不算。
+- VS Code 及其分支（Cursor、Trae、Windsurf 等，识别方法：程序包里有 `Resources/app/out/vs`；Windows 上也按程序名）完全不去查询，按不可点处理：它们把任何无障碍客户端当成读屏软件，会切到读屏优化模式、打开提示音。
+
+找到可点的控件时，记下它在屏幕上的矩形（1 分钟有效，窗口变化时清空）。鼠标在任一这样的矩形内或 10 点（Windows 按缩放换算）以内都算"在控件上"。工具栏的小图标比格子还小，图标之间有空隙，她挡着图标时用户也看不见该往哪点，所以要留这个余量。实时核实时，如果某个矩形里的点查出来不是控件，就丢掉那个矩形（内容滚动、换了）。
+
+查询结果的可靠性：
+
+- Chromium 先用上一次命中的元素（或粗略的估计）回答，后台再精确计算。所以对网页元素隔 50 毫秒再问一次，用第二次的结果；如果答回来的元素当前位置不含这个点（已经滚走了），这次算"不知道"，过会儿再问。
+- 第一次问某个程序后的 3 秒内，Electron 还没打开网页的无障碍信息，查不到东西时算"不知道"，不记成"不可点"。
+- 程序没有及时回答（macOS 超时、Windows 程序无响应）也算"不知道"：不写缓存，悬停时 1 秒后再问。
 
 ## 查询方式：后台低频扫描 + 悬停时核实
 
@@ -58,13 +72,13 @@ Q 版在屏幕底部走动时，经常停在其他程序的按钮、链接、输
 - 对该进程做命中测试：`AXUIElementCreateApplication(pid)`，`AXUIElementSetMessagingTimeout(0.1 秒)`，`AXUIElementCopyElementAtPosition(x, y)`，然后按上面的规则检查角色和动作。这样查到的是后面程序里的元素，不会查到桌宠自己。
 - 坐标：无障碍接口和窗口列表都用左上角为原点的全局坐标，与 Cocoa 的左下角坐标按主屏高度换算。
 - 让开：`panel.ignoresMouseEvents = YES` 并把窗口不透明度动画到 0.3；恢复时反过来。让开期间窗口收不到鼠标事件，靠上面的鼠标位置轮询判断何时恢复。
-- 权限：需要「辅助功能」授权。功能开着但未授权时，启动时用 `AXIsProcessTrustedWithOptions` 弹一次系统提示；菜单项显示「遇到按钮时让开（需要辅助功能权限）」，点它打开系统设置对应页面。授权前功能不工作。ad-hoc 签名的 app 每次重新构建后授权会失效，需要重新打勾；README 说明这一点。
+- 权限：需要「辅助功能」授权。功能开着但未授权时，启动时用 `AXIsProcessTrustedWithOptions` 弹一次系统提示；菜单项显示「遇到按钮时让开（需要辅助功能权限）」，点它打开系统设置对应页面。授权前功能不工作。ad-hoc 签名的 app 每次重新构建后授权会失效，需要重新打勾；`tools/setup_mac_signing.sh` 做一张本机自签名证书，`build_mac.sh` 用它签名后授权不再失效（README 说明）。
 - 按键：`NSEvent.modifierFlags` 读 ⌥ 状态，不需要权限。
 
 ### Windows
 
 - 找身后的窗口：从桌宠窗口开始沿 Z 序往下（`GetWindow(GW_HWNDNEXT)`），跳过不可见、被 DWM 隐藏（cloaked）、带 WS_EX_TRANSPARENT 的窗口和本进程窗口，取第一个包含该点的顶层窗口。
-- 命中测试：在一个 COM 工作线程里 `AccessibleObjectFromWindow(hwnd, OBJID_CLIENT)`，`accHitTest(x, y)` 逐层深入到最底层元素，按上面的规则检查角色和默认动作。这是在指定窗口内部做命中测试，不需要把桌宠窗口临时设成穿透。以管理员身份运行的程序查不到，按"不可点"处理。
+- 命中测试：在一个 COM 工作线程里 `AccessibleObjectFromWindow(hwnd, OBJID_CLIENT)`，`accHitTest(x, y)` 逐层深入到最底层元素，按上面的规则检查角色和大小（Chromium 窗口先调一次 accDefaultAction 让它打开网页的无障碍信息，结果不用）。这是在指定窗口内部做命中测试，不需要把桌宠窗口临时设成穿透。以管理员身份运行的程序查不到，按"不可点"处理。
 - 让开：给桌宠窗口加 `WS_EX_TRANSPARENT`，`UpdateLayeredWindow` 的整体不透明度降到约 77/255；恢复时反过来。与手动「鼠标穿透」共用这个样式位，两者任一开着都加上。
 - 按键：`GetAsyncKeyState(VK_MENU)`。
 
