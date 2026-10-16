@@ -901,7 +901,7 @@ struct Ship {
   [self refreshMenu];
 }
 
-// ---------- chat (optional; any OpenAI-compatible endpoint, key in chat.ini) ----------
+// ---------- chat (optional; Claude or an OpenAI-compatible endpoint, key in chat.ini) ----------
 
 - (std::string)chatIniPath {
   if (const char* p = getenv("BELFASTPET_CHAT_INI")) return p;  // debug aid: test against another config
@@ -912,7 +912,14 @@ struct Ship {
 
 - (void)openChatSettings:(id)s {
   std::string p = [self chatIniPath];
-  if (readFile(p).empty()) {
+  std::string old = readFile(p);
+  if (pet::chatIniWantsTemplate(old)) {  // missing, or an old template nobody filled in
+    if (old.find_first_not_of(" \t\r\n") != std::string::npos) {  // keep it next to the new one
+      std::string bak = p + ".bak";
+      for (int n = 2; n < 10 && [[NSFileManager defaultManager] fileExistsAtPath:@(bak.c_str())]; ++n)
+        bak = p + ".bak" + std::to_string(n);
+      std::ofstream(bak, std::ios::binary) << old;
+    }
     std::ofstream out(p, std::ios::binary);
     out << pet::chatIniTemplate();
   }
@@ -977,9 +984,9 @@ struct Ship {
   }
   NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
   req.HTTPMethod = @"POST";
-  req.timeoutInterval = cc.reasoningEffort.empty() ? 60 : 120;  // reasoning models think first
+  req.timeoutInterval = cc.reasoningEffort.empty() && !cc.anthropicApi ? 60 : 120;  // reasoning models think first
   [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-  if (!cc.authorization().empty()) [req setValue:@(cc.authorization().c_str()) forHTTPHeaderField:@"Authorization"];
+  for (const auto& h : cc.headers()) [req setValue:@(h.second.c_str()) forHTTPHeaderField:@(h.first.c_str())];
   req.HTTPBody = [NSData dataWithBytes:body.data() length:body.size()];
   chatBusy_ = true;
   chatPanel_.field.enabled = NO;

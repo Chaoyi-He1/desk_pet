@@ -659,7 +659,14 @@ pet::ChatConfig chatConfig() { return pet::ChatConfig::parse(readFile(chatIniPat
 
 void openChatSettings() {
   std::wstring p = chatIniPath();
-  if (readFile(p).empty()) {
+  std::string old = readFile(p);
+  if (pet::chatIniWantsTemplate(old)) {  // missing, or an old template nobody filled in
+    if (old.find_first_not_of(" \t\r\n") != std::string::npos) {  // keep it next to the new one
+      std::wstring bak = p + L".bak";
+      for (int n = 2; n < 10 && GetFileAttributesW(bak.c_str()) != INVALID_FILE_ATTRIBUTES; ++n)
+        bak = p + L".bak" + std::to_wstring(n);
+      std::ofstream(bak.c_str(), std::ios::binary) << old;
+    }
     std::ofstream out(p.c_str(), std::ios::binary);
     out << "\xEF\xBB\xBF" << pet::chatIniTemplate();  // BOM so Notepad keeps it UTF-8
   }
@@ -669,7 +676,7 @@ void openChatSettings() {
 struct ChatJob {
   HWND notify;
   std::wstring url;   // may carry the key as ?ak=
-  std::string auth;   // Authorization header value, "" when the key is in the URL
+  std::vector<std::pair<std::string, std::string>> headers;  // besides Content-Type (pet::ChatConfig::headers)
   std::string body, user;
   int timeoutMs = 60000;
 };
@@ -699,7 +706,7 @@ DWORD WINAPI chatThread(LPVOID param) {
                                    uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
               : nullptr;
     std::wstring headers = L"Content-Type: application/json\r\n";
-    if (!job->auth.empty()) headers += L"Authorization: " + widen(job->auth) + L"\r\n";
+    for (const auto& h : job->headers) headers += widen(h.first) + L": " + widen(h.second) + L"\r\n";
     bool ok = req && WinHttpSendRequest(req, headers.c_str(), (DWORD)-1L, (LPVOID)job->body.data(), (DWORD)job->body.size(),
                                         (DWORD)job->body.size(), 0) &&
               WinHttpReceiveResponse(req, nullptr);
@@ -740,15 +747,18 @@ void prepareChatSession(App& app) {
                                        cc.maxReplyChars));
 }
 
-void sendChat(App& app, const std::wstring& text) {
+void sendChat(App& app, const std::wstring& raw) {
+  const wchar_t* ws = L" \t\r\n\x3000";  // also the full-width space Chinese input methods type
+  size_t a = raw.find_first_not_of(ws);
+  std::wstring text = a == std::wstring::npos ? std::wstring() : raw.substr(a, raw.find_last_not_of(ws) - a + 1);
   pet::ChatConfig cc = chatConfig();
   if (app.chatBusy || !cc.ready() || text.empty()) return;
   prepareChatSession(app);
   ChatJob* job = new ChatJob();
   job->notify = app.hwnd;
   job->url = widen(cc.requestUrl());
-  job->auth = cc.authorization();
-  job->timeoutMs = cc.reasoningEffort.empty() ? 60000 : 120000;  // reasoning models think first
+  job->headers = cc.headers();
+  job->timeoutMs = cc.reasoningEffort.empty() && !cc.anthropicApi ? 60000 : 120000;  // reasoning models think first
   job->user = narrow(text);
   job->body = app.chat.requestBody(cc, job->user);
   HANDLE th = CreateThread(nullptr, 0, chatThread, job, 0, nullptr);

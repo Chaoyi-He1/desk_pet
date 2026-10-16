@@ -10,15 +10,22 @@ namespace pet {
 ChatConfig ChatConfig::parse(const std::string& iniText) {
   Ini ini = Ini::parse(iniText);
   ChatConfig c;
+  std::string api = ini.get("chat", "api", "chat");
+  c.responsesApi = api == "responses";
+  c.anthropicApi = api == "anthropic";
+  if (c.anthropicApi) {  // what an empty Claude setup needs
+    c.baseUrl = "https://api.anthropic.com";
+    c.model = "claude-opus-5-5";
+    c.reasoningEffort = "low";  // the model always thinks first; keep it short for a chat bubble
+  }
   c.baseUrl = ini.get("chat", "base_url", c.baseUrl);
   c.apiKey = ini.get("chat", "api_key", "");
   c.model = ini.get("chat", "model", c.model);
   c.maxTurns = ini.getInt("chat", "max_turns", c.maxTurns);
   c.maxReplyChars = ini.getInt("chat", "max_reply_chars", c.maxReplyChars);
   c.temperature = ini.getDouble("chat", "temperature", c.temperature);
-  c.responsesApi = ini.get("chat", "api", "chat") == "responses";
-  c.keyInQuery = ini.get("chat", "auth", "bearer") == "ak";
-  c.reasoningEffort = ini.get("chat", "reasoning_effort", "");
+  c.keyInQuery = !c.anthropicApi && ini.get("chat", "auth", "bearer") == "ak";
+  c.reasoningEffort = ini.get("chat", "reasoning_effort", c.reasoningEffort);
   while (!c.baseUrl.empty() && c.baseUrl.back() == '/') c.baseUrl.pop_back();
   return c;
 }
@@ -49,6 +56,10 @@ std::string urlEncode(const std::string& s) {
 }  // namespace
 
 std::string ChatConfig::endpoint() const {
+  if (anthropicApi) {
+    if (endsWith(baseUrl, "/v1/messages")) return baseUrl;
+    return baseUrl + (endsWith(baseUrl, "/v1") ? "/messages" : "/v1/messages");
+  }
   if (!responsesApi) return baseUrl + "/chat/completions";
   std::string root = baseUrl;  // ModelHub docs give the channel root with a dialect suffix
   for (const char* suffix : {"/responses", "/v2/crawl"})
@@ -62,23 +73,53 @@ std::string ChatConfig::requestUrl() const {
   return url + (url.find('?') == std::string::npos ? "?ak=" : "&ak=") + urlEncode(apiKey);
 }
 
-std::string ChatConfig::authorization() const { return keyInQuery ? "" : "Bearer " + apiKey; }
+bool ChatConfig::serverFallback() const {
+  if (!anthropicApi) return false;
+  for (const char* m : {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"})
+    if (model == m) return true;
+  return false;
+}
+
+std::vector<std::pair<std::string, std::string>> ChatConfig::headers() const {
+  if (anthropicApi) {
+    std::vector<std::pair<std::string, std::string>> h = {{"x-api-key", apiKey}, {"anthropic-version", "2023-06-01"}};
+    if (serverFallback()) h.push_back({"anthropic-beta", "server-side-fallback-2026-07-01"});  // with "fallbacks" in the body
+    return h;
+  }
+  if (keyInQuery) return {};
+  return {{"Authorization", "Bearer " + apiKey}};
+}
 
 const char* chatIniTemplate() {
   return "; azure_lane_pet 对话设置。填好 api_key 后右键菜单「和她聊天」即可使用。\n"
-         "; 支持任何兼容 OpenAI chat/completions 接口的服务（OpenAI、DeepSeek、通义、本地 Ollama 等）。\n"
          "; 聊天内容只会发送到这里填写的地址；不填 api_key 则功能关闭。\n"
          "[chat]\n"
-         "base_url=https://api.openai.com/v1\n"
+         "; 默认用 Claude：在 platform.claude.com 的 API Keys 页面新建一个 key，粘贴到 api_key。\n"
+         "api=anthropic\n"
+         "base_url=https://api.anthropic.com\n"
          "api_key=\n"
-         "model=gpt-4o-mini\n"
-         "max_turns=8          ; 保留多少轮上下文\n"
-         "max_reply_chars=80   ; 回复长度上限（字）\n"
-         "temperature=0.8\n"
-         "; 字节 ModelHub 等只接受 Responses API、用 ?ak= 传 key 的服务，再加上：\n"
+         "model=claude-opus-5-5     ; 也可以用 claude-sonnet-5-5、claude-haiku-5-5（更便宜、更快）\n"
+         "reasoning_effort=low      ; 回答前思考多少：low / medium / high，越高越用心，也越慢、越贵；留空则不发送\n"
+         "max_turns=8               ; 保留多少轮上下文\n"
+         "max_reply_chars=80        ; 回复长度上限（字）\n"
+         ";\n"
+         "; 改用兼容 OpenAI chat/completions 接口的服务（OpenAI、DeepSeek、通义、本地 Ollama 等）：\n"
+         "; 删掉 api=anthropic 和 reasoning_effort，改 base_url 和 model，例如\n"
+         ";   base_url=https://api.openai.com/v1\n"
+         ";   model=gpt-4o-mini\n"
+         ";   temperature=0.8\n"
+         "; 字节 ModelHub 等只接受 Responses API、用 ?ak= 传 key 的服务：\n"
          ";   api=responses\n"
          ";   auth=ak\n"
-         ";   reasoning_effort=medium   ; 推理模型的推理强度 low / medium / high\n";
+         ";   reasoning_effort=medium\n";
+}
+
+bool chatIniWantsTemplate(const std::string& iniText) {
+  // Empty, or an old template nobody filled in (no key, no api= line): unusable as it is, and
+  // the current template leads to Claude.
+  if (iniText.find_first_not_of(" \t\r\n") == std::string::npos) return true;
+  Ini ini = Ini::parse(iniText);
+  return ini.get("chat", "api", "\x01") == "\x01" && ini.get("chat", "api_key", "").empty();
 }
 
 std::string jsonQuote(const std::string& s) {
@@ -123,6 +164,21 @@ void ChatSession::reset(const std::string& systemPrompt) {
 }
 
 std::string ChatSession::requestBody(const ChatConfig& cfg, const std::string& userText) const {
+  if (cfg.anthropicApi) {
+    // Messages API: the system prompt is top-level, no sampling parameters. The model thinks
+    // before it answers and that counts against max_tokens, so leave plenty of room (the reply
+    // itself is short). Where the model supports it, the server re-answers some declined
+    // requests with the recommended fallback model. Only text is kept in the history, never
+    // thinking.
+    std::string b = "{\"model\":" + jsonQuote(cfg.model) + ",\"max_tokens\":16000,\"system\":" + jsonQuote(system_) +
+                    ",\"messages\":[";
+    for (size_t i = 0; i < history_.size(); ++i)
+      b += std::string(i ? "," : "") + "{\"role\":\"" + (i % 2 == 0 ? "user" : "assistant") +
+           "\",\"content\":" + jsonQuote(history_[i]) + "}";
+    b += std::string(history_.empty() ? "" : ",") + "{\"role\":\"user\",\"content\":" + jsonQuote(userText) + "}]";
+    if (!cfg.reasoningEffort.empty()) b += ",\"output_config\":{\"effort\":" + jsonQuote(cfg.reasoningEffort) + "}";
+    return b + (cfg.serverFallback() ? ",\"fallbacks\":\"default\"}" : "}");
+  }
   if (cfg.responsesApi) {
     // Responses API: messages become typed input parts. No temperature: reasoning models
     // reject sampling knobs. Reasoning tokens count against max_output_tokens, so leave room.
@@ -152,6 +208,7 @@ std::string ChatSession::requestBody(const ChatConfig& cfg, const std::string& u
 }
 
 void ChatSession::accept(const std::string& userText, const std::string& reply, int maxTurns) {
+  if (clipReply(userText, 1).empty() || clipReply(reply, 1).empty()) return;
   history_.push_back(userText);
   history_.push_back(reply);
   while (maxTurns >= 0 && history_.size() > (size_t)maxTurns * 2) history_.erase(history_.begin(), history_.begin() + 2);
@@ -318,12 +375,50 @@ static bool responsesText(const std::string& json, std::string* reply) {
   return found;
 }
 
+// Anthropic Messages API: the text blocks of content[] (thinking and fallback blocks carry no
+// reply), joined. 1: found; 0: a message without text (*err says why); -1: not this API.
+static int anthropicReply(const std::string& json, std::string* reply, std::string* err) {
+  Json t(json);
+  std::string type;
+  if (!(t.enterKey("type") && t.str(&type)) || type != "message") return -1;
+  Json s(json);
+  std::string stop;
+  if (!(s.enterKey("stop_reason") && s.str(&stop))) stop.clear();
+  if (stop == "refusal") {  // declined, possibly half-way: whatever text came first is not her answer
+    if (err) *err = "她没有回答这个问题";
+    return 0;
+  }
+  Json j(json);
+  std::string text;
+  bool found = false;
+  if (j.enterKey("content"))
+    j.eachElement([&](size_t block) {
+      Json k(json);
+      k.i = block;
+      std::string btype, piece;
+      if (!(k.enterKey("type") && k.str(&btype)) || btype != "text") return;
+      Json x(json);
+      x.i = block;
+      if (x.enterKey("text") && x.str(&piece)) {
+        text += piece;
+        if (piece.find_first_not_of(" \t\r\n") != std::string::npos) found = true;
+      }
+    });
+  if (found) {
+    if (reply) *reply = text;
+    return 1;
+  }
+  if (err) *err = stop == "max_tokens" ? "回复不完整：max_tokens" : "回复里没有文字";
+  return 0;
+}
+
 bool parseChatReply(const std::string& json, std::string* reply, std::string* err) {
   {
     Json j(json);
     if (j.enterKey("choices") && j.enterFirst() && j.enterKey("message") && j.enterKey("content") && j.str(reply))
       return true;
   }
+  if (int a = anthropicReply(json, reply, err); a >= 0) return a == 1;
   {
     Json j(json);
     if (j.enterKey("output_text") && j.str(reply)) return true;

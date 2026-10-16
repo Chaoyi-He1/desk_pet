@@ -47,9 +47,10 @@ Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测过占用�
 
 ### 和她聊天
 
-右键「聊天设置…」会打开 `chat.ini`（Windows 在 `%APPDATA%\azure_lane_pet\`，macOS 在 `~/Library/Application Support/azure_lane_pet/`）。填上 `api_key`，需要的话改 `base_url` 和 `model`，就能用右键「和她聊天…」打字聊天，回复显示在气泡里。
+右键「聊天设置…」会打开 `chat.ini`（Windows 在 `%APPDATA%\azure_lane_pet\`，macOS 在 `~/Library/Application Support/azure_lane_pet/`）。填上 `api_key`，就能用右键「和她聊天…」打字聊天，回复显示在气泡里。
 
-- 支持任何兼容 OpenAI `chat/completions` 接口的服务，例如 OpenAI、DeepSeek、通义千问、本地的 Ollama。
+- 默认用 Claude（`api=anthropic`）：在 platform.claude.com 的 API Keys 页面新建 key 填进去即可。默认模型 `claude-opus-5-5`，可改成 `claude-sonnet-5-5` 或 `claude-haiku-5-5`；`reasoning_effort` 控制她回答前思考多少（默认 `low`，回得快；留空则不发送，给不支持这个参数的旧模型用）。用 Opus 5.5 或 Sonnet 5.5 时，安全机制拒绝回答的部分请求会由服务端自动换用推荐的模型重答；Haiku 5.5 没有这个功能，被拒时气泡显示「她没有回答这个问题」。用过旧版、`chat.ini` 还是没填 key 的旧模板的话，点「聊天设置…」会自动换成新模板，旧文件另存为 `chat.ini.bak`。用 Opus 5.5 时一句话大约 0.01–0.03 美元，用量在 Claude Console 里能看到。
+- 也支持任何兼容 OpenAI `chat/completions` 接口的服务，例如 OpenAI、DeepSeek、通义千问、本地的 Ollama：去掉 `api=anthropic`，改 `base_url` 和 `model`。
 - 也支持 Responses API：加 `api=responses`；用 `?ak=` 传 key 的服务（例如字节 ModelHub）再加 `auth=ak`；推理模型可以用 `reasoning_effort=low/medium/high` 调推理强度。
 - 她会以当前角色的身份和口吻回答，提示词里附带了几句她的官方台词做语气参考，并知道自己穿的是哪套衣服。
 - 保留最近 8 轮对话作为上下文，换形象后重新开始。

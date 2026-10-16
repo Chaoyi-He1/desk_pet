@@ -668,6 +668,13 @@ TEST(chat_config_and_endpoint) {
   CHECK(!ChatConfig::parse(chatIniTemplate()).ready());  // template ships without a key
 }
 
+TEST(chat_template_is_claude) {
+  ChatConfig t = ChatConfig::parse(std::string(chatIniTemplate()) + "api_key=sk-ant-x\n");
+  CHECK(t.ready() && t.anthropicApi);
+  CHECK(t.endpoint() == "https://api.anthropic.com/v1/messages");
+  CHECK(t.model == "claude-opus-5-5" && t.reasoningEffort == "low");
+}
+
 TEST(chat_modelhub_responses_config) {
   ChatConfig c = ChatConfig::parse(
       "[chat]\nbase_url=https://aidp.example.net/api/modelhub/online/\napi_key=k+1/2\nmodel=gpt-6-astra\n"
@@ -676,14 +683,124 @@ TEST(chat_modelhub_responses_config) {
   CHECK(c.reasoningEffort == "medium");
   CHECK(c.endpoint() == "https://aidp.example.net/api/modelhub/online/responses");
   CHECK(c.requestUrl() == "https://aidp.example.net/api/modelhub/online/responses?ak=k%2B1%2F2");
-  CHECK(c.authorization().empty());  // the key is never sent twice
+  CHECK(c.headers().empty());  // the key is never sent twice
   // a base copied with a dialect suffix is taken as the channel root
   CHECK(ChatConfig::parse("[chat]\nbase_url=https://h/x/responses\napi=responses\n").endpoint() == "https://h/x/responses");
   CHECK(ChatConfig::parse("[chat]\nbase_url=https://h/x/v2/crawl\napi=responses\n").endpoint() == "https://h/x/responses");
   ChatConfig d = ChatConfig::parse("[chat]\nbase_url=https://api.deepseek.com/v1\napi_key=sk-x\n");
   CHECK(!d.responsesApi && !d.keyInQuery && d.reasoningEffort.empty());
   CHECK(d.requestUrl() == "https://api.deepseek.com/v1/chat/completions");
-  CHECK(d.authorization() == "Bearer sk-x");
+  CHECK(d.headers() == (std::vector<std::pair<std::string, std::string>>{{"Authorization", "Bearer sk-x"}}));
+}
+
+TEST(chat_anthropic_config) {
+  ChatConfig c = ChatConfig::parse("[chat]\napi=anthropic\napi_key=sk-ant-x\n");
+  CHECK(c.ready() && c.anthropicApi && !c.responsesApi);
+  CHECK(c.baseUrl == "https://api.anthropic.com");  // defaults for this API
+  CHECK(c.model == "claude-opus-5-5");
+  CHECK(c.reasoningEffort == "low");
+  CHECK(c.endpoint() == "https://api.anthropic.com/v1/messages");
+  CHECK(c.requestUrl() == c.endpoint());  // the key never goes into the address
+  std::vector<std::pair<std::string, std::string>> want = {
+      {"x-api-key", "sk-ant-x"},
+      {"anthropic-version", "2023-06-01"},
+      {"anthropic-beta", "server-side-fallback-2026-07-01"}};
+  CHECK(c.headers() == want);
+  // what the user sets wins; a base that already names the version or the path is not repeated
+  ChatConfig d = ChatConfig::parse(
+      "[chat]\napi=anthropic\napi_key=k\nmodel=claude-haiku-5-5\nreasoning_effort=medium\nbase_url=https://proxy.example/v1/\n");
+  CHECK(d.model == "claude-haiku-5-5" && d.reasoningEffort == "medium");
+  CHECK(d.endpoint() == "https://proxy.example/v1/messages");
+  CHECK(ChatConfig::parse("[chat]\napi=anthropic\nbase_url=https://p/v1/messages\n").endpoint() == "https://p/v1/messages");
+  CHECK(ChatConfig::parse("[chat]\napi=anthropic\nbase_url=https://p\n").endpoint() == "https://p/v1/messages");
+}
+
+TEST(chat_anthropic_request_body) {
+  ChatConfig c = ChatConfig::parse("[chat]\napi=anthropic\napi_key=k\n");
+  ChatSession s;
+  s.reset("你是贝尔法斯特");
+  s.accept("早", "早安，指挥官", 8);
+  std::string b = s.requestBody(c, "红茶");
+  CHECK(b.find("\"model\":\"claude-opus-5-5\"") != std::string::npos);
+  CHECK(b.find("\"max_tokens\":16000") != std::string::npos);
+  CHECK(b.find("\"system\":\"你是贝尔法斯特\"") != std::string::npos);
+  CHECK(b.find("\"messages\":[{\"role\":\"user\",\"content\":\"早\"},{\"role\":\"assistant\",\"content\":\"早安，指挥官\"},"
+               "{\"role\":\"user\",\"content\":\"红茶\"}]") != std::string::npos);
+  CHECK(b.find("\"output_config\":{\"effort\":\"low\"}") != std::string::npos);
+  CHECK(b.find("\"fallbacks\":\"default\"") != std::string::npos);
+  CHECK(b.find("temperature") == std::string::npos);  // Opus 5.5 rejects sampling parameters
+  CHECK(b.find("\"role\":\"system\"") == std::string::npos);  // the system prompt is top-level here
+}
+
+TEST(chat_parse_anthropic_reply) {
+  std::string r, e;
+  const char* ok =
+      "{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":["
+      "{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"abc\"},"
+      "{\"type\":\"text\",\"text\":\"指挥官，\"},{\"type\":\"text\",\"text\":\"红茶来了。\"}],"
+      "\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}";
+  CHECK(parseChatReply(ok, &r, &e));
+  CHECK(r == "指挥官，红茶来了。");
+  CHECK(!parseChatReply("{\"type\":\"message\",\"content\":[],\"stop_reason\":\"refusal\","
+                        "\"stop_details\":{\"type\":\"refusal\",\"category\":\"cyber\"}}", &r, &e));
+  CHECK(e == "她没有回答这个问题");
+  CHECK(!parseChatReply("{\"type\":\"message\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"\"}],"
+                        "\"stop_reason\":\"max_tokens\"}", &r, &e));
+  CHECK(e == "回复不完整：max_tokens");
+  CHECK(!parseChatReply("{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}",
+                        &r, &e));
+  CHECK(e == "invalid x-api-key");
+  // declined half-way: the partial text is not her answer
+  CHECK(!parseChatReply("{\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"指挥官，我想\"}],\"stop_reason\":\"refusal\"}",
+                        &r, &e));
+  CHECK(e == "她没有回答这个问题");
+  // only whitespace is no reply (an empty assistant turn would make every later request fail)
+  CHECK(!parseChatReply("{\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"\\n\\n \"}],\"stop_reason\":\"end_turn\"}",
+                        &r, &e));
+  CHECK(e == "回复里没有文字");
+}
+
+TEST(chat_history_never_stores_empty_turns) {
+  ChatSession s;
+  s.reset("p");
+  s.accept("你好", "", 8);
+  s.accept("  ", "嗯", 8);
+  CHECK_EQ(s.turns(), (size_t)0);
+  s.accept("你好", "指挥官", 8);
+  CHECK_EQ(s.turns(), (size_t)1);
+}
+
+TEST(chat_anthropic_fallback_only_where_supported) {
+  for (const char* m : {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}) {
+    ChatConfig c = ChatConfig::parse(std::string("[chat]\napi=anthropic\napi_key=k\nmodel=") + m + "\n");
+    ChatSession s;
+    s.reset("p");
+    CHECK(s.requestBody(c, "hi").find("\"fallbacks\":\"default\"") != std::string::npos);
+    CHECK(c.headers().size() == 3);
+  }
+  // Haiku 5.5 has no server-side fallback, and older models do not know the parameter
+  for (const char* m : {"claude-haiku-5-5", "claude-sonnet-4-6"}) {
+    ChatConfig c = ChatConfig::parse(std::string("[chat]\napi=anthropic\napi_key=k\nmodel=") + m + "\n");
+    ChatSession s;
+    s.reset("p");
+    CHECK(s.requestBody(c, "hi").find("fallbacks") == std::string::npos);
+    std::vector<std::pair<std::string, std::string>> want = {{"x-api-key", "k"}, {"anthropic-version", "2023-06-01"}};
+    CHECK(c.headers() == want);
+  }
+  // an empty reasoning_effort sends none (for models without effort)
+  ChatConfig n = ChatConfig::parse("[chat]\napi=anthropic\napi_key=k\nreasoning_effort=\n");
+  ChatSession s;
+  s.reset("p");
+  CHECK(n.reasoningEffort.empty() && s.requestBody(n, "hi").find("output_config") == std::string::npos);
+}
+
+TEST(chat_ini_wants_template) {
+  CHECK(chatIniWantsTemplate(""));
+  // the old OpenAI template nobody filled in: replaced, so the menu leads to Claude
+  CHECK(chatIniWantsTemplate("[chat]\nbase_url=https://api.openai.com/v1\napi_key=\nmodel=gpt-4o-mini\n"));
+  CHECK(!chatIniWantsTemplate(chatIniTemplate()));  // already the new one, key still to be filled in
+  CHECK(!chatIniWantsTemplate("[chat]\nbase_url=https://api.deepseek.com/v1\napi_key=sk-x\n"));  // in use
+  CHECK(!chatIniWantsTemplate("[chat]\napi=responses\nauth=ak\napi_key=\n"));  // set up by hand
 }
 
 TEST(chat_responses_request_body) {

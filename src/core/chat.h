@@ -1,9 +1,11 @@
-// Optional "chat with the ship" feature (like blyy's 啾信): talks to an OpenAI-style endpoint
-// the user configures, either chat/completions or the Responses API (e.g. ByteDance ModelHub,
-// which also takes its key as a ?ak= query parameter). Platform independent: builds the URL,
-// the request body and parses the reply; the shells do the HTTP.
+// Optional "chat with the ship" feature (like blyy's 啾信): talks to the endpoint the user
+// configures: the Anthropic Messages API (Claude), or an OpenAI-style chat/completions or
+// Responses API (e.g. ByteDance ModelHub, which also takes its key as a ?ak= query parameter).
+// Platform independent: builds the URL, headers and request body and parses the reply; the
+// shells do the HTTP.
 #pragma once
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace pet {
@@ -13,8 +15,11 @@ struct ChatConfig {
   std::string apiKey;
   std::string model = "gpt-4o-mini";
   bool responsesApi = false;   // api=responses: POST /responses (input/output) instead of chat/completions
+  // api=anthropic: POST /v1/messages (Claude). Defaults then: base_url https://api.anthropic.com,
+  // model claude-opus-5-5, reasoning_effort low (sent as output_config.effort).
+  bool anthropicApi = false;
   bool keyInQuery = false;     // auth=ak: the key goes in "?ak=" (ModelHub) instead of "Authorization: Bearer"
-  std::string reasoningEffort; // reasoning_effort=low|medium|high (Responses API only); empty: not sent
+  std::string reasoningEffort; // reasoning_effort=low|medium|high (Responses / Anthropic); empty: not sent
   int maxTurns = 8;          // user+assistant pairs kept as context
   int maxReplyChars = 80;    // asked of the model; replies are also clipped for the bubble
   double temperature = 0.8;  // chat/completions only (reasoning models reject it)
@@ -23,16 +28,23 @@ struct ChatConfig {
   // max_reply_chars, temperature
   static ChatConfig parse(const std::string& iniText);
   // URL without credentials: base_url + "/chat/completions" or "/responses" (a base_url that
-  // already ends in "/responses" or ModelHub's "/v2/crawl" is taken as its channel root).
+  // already ends in "/responses" or ModelHub's "/v2/crawl" is taken as its channel root), or
+  // base_url + "/v1/messages" for Anthropic (not repeating a "/v1" or "/v1/messages" ending).
   std::string endpoint() const;
   // What to request: endpoint(), plus "?ak=<key>" when keyInQuery.
   std::string requestUrl() const;
-  // Value of the Authorization header, or "" when the key travels in the URL.
-  std::string authorization() const;
+  // Request headers besides Content-Type: the credentials (none when the key travels in the
+  // URL) and, for Anthropic, the API version and beta flags.
+  std::vector<std::pair<std::string, std::string>> headers() const;
+  // Anthropic models whose declined requests the server re-answers with a recommended model
+  // ("fallbacks": "default"); Haiku 5.5 has none and older models do not take the parameter.
+  bool serverFallback() const;
 };
 
 // Template written to chat.ini when the user opens the chat settings for the first time.
 const char* chatIniTemplate();
+// Whether opening the chat settings should (re)write the template over `iniText`.
+bool chatIniWantsTemplate(const std::string& iniText);
 
 // JSON string literal (with quotes) for UTF-8 text.
 std::string jsonQuote(const std::string& utf8);
@@ -46,7 +58,8 @@ public:
   void reset(const std::string& systemPrompt);
   // Request body for the next reply to `userText` (the text is not stored until accepted).
   std::string requestBody(const ChatConfig& cfg, const std::string& userText) const;
-  // Stores the exchange after a successful reply; drops the oldest turns beyond maxTurns.
+  // Stores the exchange after a successful reply; drops the oldest turns beyond maxTurns. An
+  // exchange with an empty side is not stored (the Messages API rejects empty turns).
   void accept(const std::string& userText, const std::string& reply, int maxTurns);
   size_t turns() const { return history_.size() / 2; }
 
@@ -55,9 +68,10 @@ private:
   std::vector<std::string> history_;  // user, assistant, user, assistant, ...
 };
 
-// Extracts the reply text: choices[0].message.content (chat/completions), or output_text /
-// the output_text parts of output[] messages (Responses API). On failure returns false and
-// puts a short reason (API error message if present) into *err.
+// Extracts the reply text: choices[0].message.content (chat/completions), the text blocks of
+// content[] (Anthropic), or output_text / the output_text parts of output[] messages (Responses
+// API). On failure returns false and puts a short reason (API error message if present, or a
+// refusal / cut-off reply) into *err.
 bool parseChatReply(const std::string& json, std::string* reply, std::string* err);
 
 // Trims whitespace and clips to at most maxChars code points (adding "…").
