@@ -824,12 +824,12 @@ void sendChat(App& app, const std::wstring& raw) {
     pet::ChatSession study;
     study.reset(pet::chatStudySystemPrompt());
     app.pendingChat = narrow(text);
-    if (startChatJob(app, cc, "", study.requestBody(cc, pet::chatStudyUserPrompt(p)), true)) showChatBubble(app, "……");
+    startChatJob(app, cc, "", study.requestBody(cc, pet::chatStudyUserPrompt(p)), true);
     return;
   }
   prepareChatSession(app);
   std::string user = narrow(text);
-  if (startChatJob(app, cc, user, app.chat.requestBody(cc, user), false)) showChatBubble(app, "……");
+  startChatJob(app, cc, user, app.chat.requestBody(cc, user), false);
 }
 
 WNDPROC g_editProc = nullptr;
