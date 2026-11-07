@@ -116,7 +116,7 @@ const char* chatIniTemplate() {
          "api_key=\n"
          "model=claude-opus-5-5     ; 也可以用 claude-sonnet-5-5、claude-haiku-5-5（更便宜、更快）\n"
          "reasoning_effort=low      ; 回答前思考多少：low / medium / high，越高越用心，也越慢、越贵；留空则不发送\n"
-         "max_turns=8               ; 保留多少轮上下文\n"
+         "max_turns=3               ; 保留最近几轮对话作上下文；她只回应你刚说的这句\n"
          "max_reply_chars=80        ; 回复长度上限（字）\n"
          "; max_tokens=16000        ; 单次回复的 token 上限（含思考）\n"
          "; fallbacks=0             ; 被安全策略拒答时不让服务端换模型重答\n"
@@ -376,7 +376,8 @@ std::string chatPersonaPrompt(const Persona& p, const std::string& profile) {
   s += "\n【回答要求】\n始终以" + p.shipName +
        (profile.empty() ? std::string("的身份、性格和口吻用中文回答，像台词里那样称呼对方（指挥官，或你惯用的称呼）。")
                         : std::string("的身份，按角色档案里的性格、说话方式和称呼用中文回答。")) +
-       "不要提及自己是AI或语言模型，也不要原样背诵台词，而是用同样的语气自然地说新的话。每次回复简短自然，不超过" +
+       "不要提及自己是AI或语言模型，也不要原样背诵台词，而是用同样的语气自然地说新的话。"
+       "只回应指挥官刚说的这一句；之前的对话只用来接上话题，不要复述、点评或数指挥官之前说过什么。每次回复简短自然，不超过" +
        std::to_string(p.maxReplyChars) + "字，不使用列表和表情符号。";
   return s;
 }

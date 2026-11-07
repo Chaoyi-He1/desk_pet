@@ -25,7 +25,7 @@ struct ChatConfig {
   std::string reasoningEffort; // reasoning_effort=low|medium|high (Responses / Anthropic); empty: not sent
   int maxTokens = 0;           // max_tokens of an Anthropic reply, thinking included; 0: 16000
   bool fallbacks = true;       // fallbacks=0: never ask the server to re-answer a declined request
-  int maxTurns = 8;          // user+assistant pairs kept as context
+  int maxTurns = 3;          // user+assistant pairs kept as context: a few lines, she does not dwell on them
   int maxReplyChars = 80;    // asked of the model; replies are also clipped for the bubble
   double temperature = 0.8;  // chat/completions only (reasoning models reject it)
   bool ready() const { return !apiKey.empty() && !baseUrl.empty() && !model.empty(); }

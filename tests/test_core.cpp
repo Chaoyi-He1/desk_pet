@@ -664,6 +664,7 @@ TEST(chat_config_and_endpoint) {
   CHECK(c.endpoint() == "https://api.deepseek.com/v1/chat/completions");
   CHECK(c.model == "deepseek-chat");
   CHECK_EQ(c.maxTurns, 3);
+  CHECK_EQ(ChatConfig::parse("[chat]\n").maxTurns, 3);  // the default keeps only a few lines
   CHECK(!ChatConfig::parse("[chat]\napi_key=\n").ready());
   CHECK(!ChatConfig::parse(chatIniTemplate()).ready());  // template ships without a key
 }
@@ -944,6 +945,7 @@ TEST(chat_persona_prompt_groups_all_outfits) {
   CHECK(s.find("你现在穿着「彩云之玫瑰」。") != std::string::npos && s.find("缔结了誓约") == std::string::npos);
   CHECK(s.find("不超过60字") != std::string::npos);
   CHECK(s.find("不要原样背诵") != std::string::npos);
+  CHECK(s.find("只回应指挥官刚说的这一句") != std::string::npos);  // earlier turns are context, not a topic
   p.oath = true;
   p.voiceSkin = "10";
   p.outfit = "克拉达的誓约";
