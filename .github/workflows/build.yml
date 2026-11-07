@@ -1,0 +1,26 @@
+# Compiles the macOS app (and runs the core tests) on every push: the Mac side is often
+# edited on a Windows PC where it cannot be built.
+name: build
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Core tests
+        run: |
+          mkdir -p build
+          clang++ -std=c++17 -I src tests/test_core.cpp src/core/*.cpp -o build/test_core
+          ./build/test_core
+      - name: Build the app
+        run: ./build_mac.sh
+      - name: Keep the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure_lane_pet-mac
+          path: dist/azure_lane_pet.app
+          if-no-files-found: error
