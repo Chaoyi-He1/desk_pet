@@ -851,9 +851,31 @@ LRESULT CALLBACK chatEditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   return CallWindowProcW(g_editProc, h, msg, wp, lp);
 }
 
+const int IDC_MIC = 1;  // the 语音 button in the chat window
+
+// Windows' own voice typing (Win+H) dictates into the focused box; its first use asks the
+// user to turn on online speech recognition. No speech engine of our own: this PC, like most,
+// has no offline Chinese recognizer, and voice typing handles Chinese well.
+void startDictation(App& app) {
+  if (app.chatEdit) SetFocus(app.chatEdit);
+  INPUT in[4] = {};
+  for (INPUT& i : in) i.type = INPUT_KEYBOARD;
+  in[0].ki.wVk = VK_LWIN;
+  in[1].ki.wVk = 'H';
+  in[2].ki.wVk = 'H';
+  in[2].ki.dwFlags = KEYEVENTF_KEYUP;
+  in[3].ki.wVk = VK_LWIN;
+  in[3].ki.dwFlags = KEYEVENTF_KEYUP;
+  SendInput(4, in, sizeof(INPUT));
+}
+
 LRESULT CALLBACK chatWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_CLOSE) {
     ShowWindow(h, SW_HIDE);
+    return 0;
+  }
+  if (msg == WM_COMMAND && LOWORD(wp) == IDC_MIC && g_app) {
+    startDictation(*g_app);
     return 0;
   }
   if (msg == WM_ACTIVATE && LOWORD(wp) != WA_INACTIVE && g_app && g_app->chatEdit) SetFocus(g_app->chatEdit);
@@ -873,16 +895,20 @@ void openChat(App& app) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     RegisterClassW(&wc);
-    RECT r = {0, 0, 340, 36};
+    RECT r = {0, 0, 380, 36};
     AdjustWindowRectEx(&r, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW | WS_EX_TOPMOST);
     app.chatWnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, wc.lpszClassName, L"和她聊天", WS_POPUP | WS_CAPTION | WS_SYSMENU,
                                   0, 0, r.right - r.left, r.bottom - r.top, nullptr, nullptr, app.hinst, nullptr);
-    app.chatEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 6, 6, 328, 24,
+    app.chatEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 6, 6, 310, 24,
                                    app.chatWnd, nullptr, app.hinst, nullptr);
+    // Speak instead of typing: the button opens Windows' own voice typing into the box.
+    HWND mic = CreateWindowExW(0, L"BUTTON", L"语音", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 322, 6, 52, 24, app.chatWnd,
+                               (HMENU)(INT_PTR)IDC_MIC, app.hinst, nullptr);
     HFONT font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
     SendMessageW(app.chatEdit, WM_SETFONT, (WPARAM)font, TRUE);
-    SendMessageW(app.chatEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"说点什么，回车发送");
+    SendMessageW(mic, WM_SETFONT, (WPARAM)font, TRUE);
+    SendMessageW(app.chatEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"说点什么，回车发送；Win+H 语音输入");
     g_editProc = (WNDPROC)SetWindowLongPtrW(app.chatEdit, GWLP_WNDPROC, (LONG_PTR)chatEditProc);
   }
   RECT wr;

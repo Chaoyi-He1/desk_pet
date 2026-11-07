@@ -132,7 +132,7 @@ struct Ship {
 
 @implementation ChatPanel
 - (instancetype)init {
-  self = [super initWithContentRect:NSMakeRect(0, 0, 320, 34)
+  self = [super initWithContentRect:NSMakeRect(0, 0, 372, 34)
                           styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
                             backing:NSBackingStoreBuffered
                               defer:NO];
@@ -142,16 +142,27 @@ struct Ship {
     self.hidesOnDeactivate = NO;
     self.releasedWhenClosed = NO;
     self.floatingPanel = YES;
-    self.field = [[NSTextField alloc] initWithFrame:NSMakeRect(6, 6, 308, 22)];
+    self.field = [[NSTextField alloc] initWithFrame:NSMakeRect(6, 6, 300, 22)];
     self.field.placeholderString = @"说点什么，回车发送";
     self.field.delegate = self;
     self.field.target = self;
     self.field.action = @selector(send:);
     [self.contentView addSubview:self.field];
+    // Speak instead of typing: the button starts the system's dictation into the field.
+    NSButton* mic = [[NSButton alloc] initWithFrame:NSMakeRect(312, 4, 54, 26)];
+    mic.title = @"语音";
+    mic.bezelStyle = NSBezelStyleRounded;
+    mic.target = self;
+    mic.action = @selector(dictate:);
+    [self.contentView addSubview:mic];
   }
   return self;
 }
 - (BOOL)canBecomeKeyWindow { return YES; }
+- (void)dictate:(id)sender {
+  [self makeFirstResponder:self.field];
+  [NSApp sendAction:@selector(startDictation:) to:nil from:self];  // AppKit's Edit ▸ Start Dictation
+}
 - (void)send:(id)sender {
   NSString* t = [self.field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   if (t.length == 0 || !self.field.enabled) return;
