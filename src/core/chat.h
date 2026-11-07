@@ -8,6 +8,9 @@
 #include <utility>
 #include <vector>
 
+#include "core/ini.h"
+#include "core/voice.h"
+
 namespace pet {
 
 struct ChatConfig {
@@ -20,13 +23,22 @@ struct ChatConfig {
   bool anthropicApi = false;
   bool keyInQuery = false;     // auth=ak: the key goes in "?ak=" (ModelHub) instead of "Authorization: Bearer"
   std::string reasoningEffort; // reasoning_effort=low|medium|high (Responses / Anthropic); empty: not sent
+  int maxTokens = 0;           // max_tokens of an Anthropic reply, thinking included; 0: 16000
+  bool fallbacks = true;       // fallbacks=0: never ask the server to re-answer a declined request
   int maxTurns = 8;          // user+assistant pairs kept as context
   int maxReplyChars = 80;    // asked of the model; replies are also clipped for the bubble
   double temperature = 0.8;  // chat/completions only (reasoning models reject it)
   bool ready() const { return !apiKey.empty() && !baseUrl.empty() && !model.empty(); }
-  // chat.ini: [chat] base_url, api_key, model, api, auth, reasoning_effort, max_turns,
-  // max_reply_chars, temperature
+  // chat.ini: [chat] base_url, api_key, model, api, auth, reasoning_effort, max_tokens, fallbacks,
+  // max_turns, max_reply_chars, temperature
   static ChatConfig parse(const std::string& iniText);
+  // Key from ~/.azure_lane_pet/credentials: "[default]" then anthropic_api_key=... (or api_key=).
+  // "" when the file has none.
+  static std::string keyFromCredentials(const std::string& iniText);
+  // Takes `key` when chat.ini gave none: the shells try the credentials file, then the environment.
+  void useKeyIfEmpty(const std::string& key) {
+    if (apiKey.empty()) apiKey = key;
+  }
   // URL without credentials: base_url + "/chat/completions" or "/responses" (a base_url that
   // already ends in "/responses" or ModelHub's "/v2/crawl" is taken as its channel root), or
   // base_url + "/v1/messages" for Anthropic (not repeating a "/v1" or "/v1/messages" ending).
@@ -37,7 +49,8 @@ struct ChatConfig {
   // URL) and, for Anthropic, the API version and beta flags.
   std::vector<std::pair<std::string, std::string>> headers() const;
   // Anthropic models whose declined requests the server re-answers with a recommended model
-  // ("fallbacks": "default"); Haiku 5.5 has none and older models do not take the parameter.
+  // ("fallbacks": "default"), unless fallbacks=0; Haiku 5.5 has none and older models do not
+  // take the parameter.
   bool serverFallback() const;
 };
 
@@ -52,6 +65,25 @@ std::string jsonQuote(const std::string& utf8);
 // System prompt: who she is, how to talk, plus a few of her official lines as examples.
 std::string chatSystemPrompt(const std::string& shipName, const std::string& skinName,
                              const std::vector<std::string>& sampleLines, int maxReplyChars);
+
+// Everything the persona prompt is built from: the ship, what she wears, and her lines.
+struct Persona {
+  std::string shipName;   // 贝尔法斯特
+  std::string outfit;     // display name of the current outfit, e.g. 改造
+  std::string voiceSkin;  // voice table of the current skin, e.g. "02"
+  bool oath = false;      // the current skin is an oath skin: post-oath lines are in character
+  std::vector<std::pair<std::string, std::string>> skinNames;  // voice table -> outfit name
+  const VoiceBank* voices = nullptr;
+  int maxReplyChars = 80;
+  // Records the outfit name of a skin file or folder ("03-彩云之玫瑰.png", "Q版-03-彩云之玫瑰")
+  // under the voice table it uses (ship.ini voice_NN remaps); the first name seen for a table wins.
+  void addSkinName(const std::string& skinFileName, const Ini& shipIni);
+};
+
+// System prompt that lets the model study her before answering: who she is, all her official
+// lines grouped by outfit and scene (the current outfit first; post-oath lines only after the
+// oath), what she wears now, and how to answer. The same text every turn, so it caches.
+std::string chatPersonaPrompt(const Persona& p);
 
 class ChatSession {
 public:

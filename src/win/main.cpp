@@ -667,7 +667,16 @@ struct ChatResult {
 };
 
 std::wstring chatIniPath() { return userDataDir() + L"\\chat.ini"; }
-pet::ChatConfig chatConfig() { return pet::ChatConfig::parse(readFile(chatIniPath())); }
+// chat.ini, with the key from %USERPROFILE%\.azure_lane_pet\credentials or ANTHROPIC_API_KEY when it has none.
+pet::ChatConfig chatConfig() {
+  pet::ChatConfig c = pet::ChatConfig::parse(readFile(chatIniPath()));
+  wchar_t home[MAX_PATH];
+  if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PROFILE, nullptr, 0, home)))
+    c.useKeyIfEmpty(pet::ChatConfig::keyFromCredentials(readFile(std::wstring(home) + L"\\.azure_lane_pet\\credentials")));
+  wchar_t env[512] = {};
+  if (GetEnvironmentVariableW(L"ANTHROPIC_API_KEY", env, 512)) c.useKeyIfEmpty(narrow(env));
+  return c;
+}
 
 void openChatSettings() {
   std::wstring p = chatIniPath();
@@ -752,11 +761,17 @@ void prepareChatSession(App& app) {
   app.chatKey = key;
   bool oath = false;
   std::string vskin = voiceSkin(app, &oath);
-  std::string fallback = app.ships[app.ship].ini.get("ship", "default_voice", "01");
-  pet::ChatConfig cc = chatConfig();
-  std::vector<std::string> samples = app.voices.samples(vskin, fallback, 8, oath, app.rng);
-  app.chat.reset(pet::chatSystemPrompt(narrow(app.ships[app.ship].name), pet::skinOutfitName(narrow(app.skin)), samples,
-                                       cc.maxReplyChars));
+  // Her whole repertoire, so the model can study her before the first answer.
+  const Ship& ship = app.ships[app.ship];
+  pet::Persona p;
+  p.shipName = narrow(ship.name);
+  p.outfit = pet::skinOutfitName(narrow(app.skin));
+  p.voiceSkin = vskin;
+  p.oath = oath;
+  for (const std::wstring& f : ship.skins) p.addSkinName(narrow(f), ship.ini);
+  p.voices = app.voices.empty() ? &app.fallbackVoices : &app.voices;
+  p.maxReplyChars = chatConfig().maxReplyChars;
+  app.chat.reset(pet::chatPersonaPrompt(p));
 }
 
 void sendChat(App& app, const std::wstring& raw) {

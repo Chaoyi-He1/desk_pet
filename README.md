@@ -47,14 +47,26 @@ Windows 上实测（Ryzen 7 9700X）：Q 版待机约 1% 单核、30 MB。
 
 ### 和她聊天
 
-右键「聊天设置…」会打开 `chat.ini`（Windows 在 `%APPDATA%\azure_lane_pet\`，macOS 在 `~/Library/Application Support/azure_lane_pet/`）。填上 `api_key`，就能用右键「和她聊天…」打字聊天，回复显示在气泡里。
+右键「聊天设置…」会打开 `chat.ini`（Windows 在 `%APPDATA%\azure_lane_pet\`，macOS 在 `~/Library/Application Support/azure_lane_pet/`）。把 API key 放到下面任意一处，就能用右键「和她聊天…」打字聊天，回复显示在气泡里：
 
-- 默认用 Claude（`api=anthropic`）：在 platform.claude.com 的 API Keys 页面新建 key 填进去即可。默认模型 `claude-opus-5-5`，可改成 `claude-sonnet-5-5` 或 `claude-haiku-5-5`；`reasoning_effort` 控制她回答前思考多少（默认 `low`，回得快；留空则不发送，给不支持这个参数的旧模型用）。用 Opus 5.5 或 Sonnet 5.5 时，安全机制拒绝回答的部分请求会由服务端自动换用推荐的模型重答；Haiku 5.5 没有这个功能，被拒时气泡显示「她没有回答这个问题」。用过旧版、`chat.ini` 还是没填 key 的旧模板的话，点「聊天设置…」会自动换成新模板，旧文件另存为 `chat.ini.bak`。用 Opus 5.5 时一句话大约 0.01–0.03 美元，用量在 Claude Console 里能看到。
+- `~/.azure_lane_pet/credentials`（Windows 是 `%USERPROFILE%\.azure_lane_pet\credentials`）。像 AWS 的凭据文件一样只放密钥，不在仓库里：
+
+  ```ini
+  [default]
+  anthropic_api_key=sk-ant-…
+  ```
+
+- 环境变量 `ANTHROPIC_API_KEY`。
+- 直接填 `chat.ini` 里的 `api_key`（填了就用它，不再看别处）。
+
+聊天的行为：
+
+- 默认用 Claude（`api=anthropic`）：在 platform.claude.com 的 API Keys 页面新建 key。默认模型 `claude-opus-5-5`，可改成 `claude-sonnet-5-5` 或 `claude-haiku-5-5`；`reasoning_effort` 控制她回答前思考多少（默认 `low`，回得快；留空则不发送，给不支持这个参数的旧模型用）；`max_tokens` 限制单次回复（默认 16000，含思考）。用 Opus 5.5 或 Sonnet 5.5 时，安全机制拒绝回答的部分请求会由服务端自动换用推荐的模型重答（`fallbacks=0` 关闭）；Haiku 5.5 没有这个功能，被拒时气泡显示「她没有回答这个问题」。用过旧版、`chat.ini` 还是没填 key 的旧模板的话，点「聊天设置…」会自动换成新模板，旧文件另存为 `chat.ini.bak`。角色资料作为缓存前缀发送，之后每句话只按缓存价计费；用 Opus 5.5 时一句话大约 0.01–0.03 美元，用量在 Claude Console 里能看到。
 - 也支持任何兼容 OpenAI `chat/completions` 接口的服务，例如 OpenAI、DeepSeek、通义千问、本地的 Ollama：去掉 `api=anthropic`，改 `base_url` 和 `model`。
 - 也支持 Responses API：加 `api=responses`；用 `?ak=` 传 key 的服务（例如字节 ModelHub）再加 `auth=ak`；推理模型可以用 `reasoning_effort=low/medium/high` 调推理强度。
-- 她会以当前角色的身份和口吻回答，提示词里附带了几句她的官方台词做语气参考，并知道自己穿的是哪套衣服。
+- 开始聊天前，她会先把当前角色**所有衣装**的官方台词和衣装介绍按「衣装 → 场合」整理成角色资料（自我介绍、登录、主界面、触摸、好感度……），当前穿的衣装排在最前，并据此体会性格、口癖和与指挥官的关系，再回答每一句。誓约后的台词只在穿誓约皮肤时才给她看。
 - 保留最近 8 轮对话作为上下文，换形象后重新开始。
-- 聊天内容只发往你填写的地址。不填 `api_key` 则这个功能完全不联网。
+- 聊天内容只发往你填写的地址。拿不到 key 则这个功能完全不联网。
 
 开启「鼠标穿透」后宠物不再响应鼠标，要关掉请用托盘（Windows）或状态栏（macOS）图标的菜单。
 

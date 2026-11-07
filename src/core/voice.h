@@ -29,6 +29,7 @@ public:
 
   bool empty() const { return lines_.empty(); }
   size_t size() const { return lines_.size(); }
+  const std::vector<Line>& lines() const { return lines_; }
 
   // First key in `keys` that has lines for `skin`, else for `fallbackSkin`, else for any
   // skin. Oath lines are used only when `oathOk`. Avoids repeating the previous pick

@@ -1,9 +1,11 @@
 #include "core/chat.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
 #include "core/ini.h"
+#include "core/skin.h"
 
 namespace pet {
 
@@ -26,8 +28,20 @@ ChatConfig ChatConfig::parse(const std::string& iniText) {
   c.temperature = ini.getDouble("chat", "temperature", c.temperature);
   c.keyInQuery = !c.anthropicApi && ini.get("chat", "auth", "bearer") == "ak";
   c.reasoningEffort = ini.get("chat", "reasoning_effort", c.reasoningEffort);
+  c.maxTokens = ini.getInt("chat", "max_tokens", 0);
+  c.fallbacks = ini.getInt("chat", "fallbacks", 1) != 0;
   while (!c.baseUrl.empty() && c.baseUrl.back() == '/') c.baseUrl.pop_back();
   return c;
+}
+
+std::string ChatConfig::keyFromCredentials(const std::string& iniText) {
+  Ini ini = Ini::parse(iniText);
+  for (const char* sec : {"default", ""})
+    for (const char* key : {"anthropic_api_key", "api_key"}) {
+      std::string k = ini.get(sec, key, "");
+      if (!k.empty()) return k;
+    }
+  return "";
 }
 
 namespace {
@@ -74,7 +88,7 @@ std::string ChatConfig::requestUrl() const {
 }
 
 bool ChatConfig::serverFallback() const {
-  if (!anthropicApi) return false;
+  if (!anthropicApi || !fallbacks) return false;
   for (const char* m : {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"})
     if (model == m) return true;
   return false;
@@ -82,7 +96,7 @@ bool ChatConfig::serverFallback() const {
 
 std::vector<std::pair<std::string, std::string>> ChatConfig::headers() const {
   if (anthropicApi) {
-    std::vector<std::pair<std::string, std::string>> h = {{"x-api-key", apiKey}, {"anthropic-version", "2023-06-01"}};
+    std::vector<std::pair<std::string, std::string>> h = {{"x-api-key", apiKey}, {"anthropic-version", "2026-10-21"}};
     if (serverFallback()) h.push_back({"anthropic-beta", "server-side-fallback-2026-07-01"});  // with "fallbacks" in the body
     return h;
   }
@@ -92,7 +106,9 @@ std::vector<std::pair<std::string, std::string>> ChatConfig::headers() const {
 
 const char* chatIniTemplate() {
   return "; azure_lane_pet 对话设置。填好 api_key 后右键菜单「和她聊天」即可使用。\n"
-         "; 聊天内容只会发送到这里填写的地址；不填 api_key 则功能关闭。\n"
+         "; 聊天内容只会发送到这里填写的地址；拿不到 api_key 则功能关闭。\n"
+         "; api_key 留空时，依次读取 ~/.azure_lane_pet/credentials（Windows 是 %USERPROFILE%\\.azure_lane_pet\\credentials）\n"
+         "; 里的 [default] anthropic_api_key=… ，以及环境变量 ANTHROPIC_API_KEY。\n"
          "[chat]\n"
          "; 默认用 Claude：在 platform.claude.com 的 API Keys 页面新建一个 key，粘贴到 api_key。\n"
          "api=anthropic\n"
@@ -102,6 +118,8 @@ const char* chatIniTemplate() {
          "reasoning_effort=low      ; 回答前思考多少：low / medium / high，越高越用心，也越慢、越贵；留空则不发送\n"
          "max_turns=8               ; 保留多少轮上下文\n"
          "max_reply_chars=80        ; 回复长度上限（字）\n"
+         "; max_tokens=16000        ; 单次回复的 token 上限（含思考）\n"
+         "; fallbacks=0             ; 被安全策略拒答时不让服务端换模型重答\n"
          ";\n"
          "; 改用兼容 OpenAI chat/completions 接口的服务（OpenAI、DeepSeek、通义、本地 Ollama 等）：\n"
          "; 删掉 api=anthropic 和 reasoning_effort，改 base_url 和 model，例如\n"
@@ -158,6 +176,109 @@ std::string chatSystemPrompt(const std::string& shipName, const std::string& ski
   return p;
 }
 
+// ---------- persona ----------
+
+void Persona::addSkinName(const std::string& skinFileName, const Ini& shipIni) {
+  std::string num = skinNumber(skinFileName);
+  if (num.empty()) return;
+  std::string table = shipIni.get("ship", "voice_" + num, num);
+  for (const auto& kv : skinNames)
+    if (kv.first == table) return;
+  skinNames.push_back({table, skinOutfitName(skinFileName)});
+}
+
+namespace {
+
+// Wiki/game line keys in the order they are listed under an outfit, with the scene each stands for.
+const std::pair<const char*, const char*> kScenes[] = {
+    {"desc", "衣装介绍"},        {"profile", "自我介绍"},          {"unlock", "初次见面"},
+    {"login", "登录"},           {"home", "回港"},                 {"main", "主界面闲聊"},
+    {"detail", "查看详情"},      {"touch", "触摸"},                {"headtouch", "摸头"},
+    {"touch2", "特殊触摸"},      {"mission", "有新任务"},          {"mission_complete", "任务完成"},
+    {"mail", "有新邮件"},        {"expedition", "委托完成"},       {"battle", "出击"},
+    {"skill", "发动技能"},       {"hp_warning", "血量告急"},       {"win_mvp", "胜利MVP"},
+    {"lose", "战败"},            {"upgrade", "强化成功"},          {"gift_prefer", "收到礼物"},
+    {"couple_encourage", "鼓励同伴"}, {"feeling1", "好感度·失望"},  {"feeling2", "好感度·陌生"},
+    {"feeling3", "好感度·友好"}, {"feeling4", "好感度·喜欢"},      {"feeling5", "好感度·爱"},
+    {"propose", "誓约"},         {"extra", "其他"},
+};
+
+int sceneRank(const std::string& key) {
+  int i = 0;
+  for (const auto& s : kScenes) {
+    if (key == s.first) return i;
+    ++i;
+  }
+  return i;
+}
+
+std::string sceneLabel(const std::string& key) {
+  if (key == "*") return "";  // generic lines: no scene
+  for (const auto& s : kScenes)
+    if (key == s.first) return s.second;
+  return "其他";
+}
+
+}  // namespace
+
+std::string chatPersonaPrompt(const Persona& p) {
+  std::string s = "你是手游《碧蓝航线》中的舰船少女" + p.shipName + "，正在指挥官的电脑桌面上陪伴他。\n";
+  std::vector<const Line*> all;
+  if (p.voices)
+    for (const Line& l : p.voices->lines())
+      if (!l.oath || p.oath) all.push_back(&l);
+  if (!all.empty()) {
+    s += "\n下面是你的角色资料：游戏里你在各套衣装下说过的台词，按衣装和场合整理。请先据此体会你的性格、口癖、"
+         "称呼习惯、与指挥官的关系以及每套衣装的设定，之后的每一句回答都要符合这个形象。\n";
+    std::string profile;
+    for (const Line* l : all)
+      if (l->key == "profile") profile += "\n" + l->text;
+    if (!profile.empty()) s += "\n【角色自述】" + profile + "\n";
+    // Outfits: the one she wears first, then the known outfits in order, then any table left over.
+    std::vector<std::string> order;
+    auto add = [&](const std::string& n) {
+      if (std::find(order.begin(), order.end(), n) == order.end()) order.push_back(n);
+    };
+    if (!p.voiceSkin.empty()) add(p.voiceSkin);
+    for (const auto& kv : p.skinNames) add(kv.first);
+    for (const Line* l : all) add(l->skin);
+    for (const std::string& num : order) {
+      std::vector<const Line*> mine;
+      for (const Line* l : all)
+        if (l->skin == num && l->key != "profile") mine.push_back(l);
+      if (mine.empty()) continue;
+      std::stable_sort(mine.begin(), mine.end(),
+                       [](const Line* a, const Line* b) { return sceneRank(a->key) < sceneRank(b->key); });
+      std::string head = "【台词】";
+      if (!num.empty()) {
+        std::string name = num;
+        for (const auto& kv : p.skinNames)
+          if (kv.first == num) name = kv.second;
+        head = "【衣装「" + name + "」】";
+        if (num == p.voiceSkin) head += "（你现在穿着这套）";
+      }
+      s += "\n" + head + "\n";
+      for (const Line* l : mine) {
+        std::string label = sceneLabel(l->key);
+        s += "- " + (label.empty() ? "" : label + "：") + l->text + "\n";
+      }
+    }
+  }
+  if (!p.outfit.empty() || p.oath) {
+    s += "\n【现在的状态】\n";
+    if (!p.outfit.empty()) s += "你现在穿着「" + p.outfit + "」。";
+    if (p.oath) s += "你已经和指挥官缔结了誓约。";
+    s += "\n";
+  }
+  s += "\n【回答要求】\n始终以" + p.shipName +
+       "的身份、性格和口吻用中文回答，像台词里那样称呼对方（指挥官，或你惯用的称呼）。不要提及自己是AI或语言模型，"
+       "也不要原样背诵上面的台词，而是用同样的语气自然地说新的话。每次回复简短自然，不超过" +
+       std::to_string(p.maxReplyChars) + "字，不使用列表和表情符号。";
+  return s;
+}
+
+// ---------- session ----------
+
 void ChatSession::reset(const std::string& systemPrompt) {
   system_ = systemPrompt;
   history_.clear();
@@ -165,13 +286,16 @@ void ChatSession::reset(const std::string& systemPrompt) {
 
 std::string ChatSession::requestBody(const ChatConfig& cfg, const std::string& userText) const {
   if (cfg.anthropicApi) {
-    // Messages API: the system prompt is top-level, no sampling parameters. The model thinks
-    // before it answers and that counts against max_tokens, so leave plenty of room (the reply
-    // itself is short). Where the model supports it, the server re-answers some declined
-    // requests with the recommended fallback model. Only text is kept in the history, never
-    // thinking.
-    std::string b = "{\"model\":" + jsonQuote(cfg.model) + ",\"max_tokens\":16000,\"system\":" + jsonQuote(system_) +
-                    ",\"messages\":[";
+    // Messages API: the system prompt is a top-level block and, being the same every turn, the
+    // cached prefix; no sampling parameters. The model thinks before it answers and that counts
+    // against max_tokens, so leave plenty of room (the reply itself is short). Where the model
+    // supports it, the server re-answers some declined requests with the recommended fallback
+    // model. Only text is kept in the history, never thinking.
+    std::string b = "{\"model\":" + jsonQuote(cfg.model) +
+                    ",\"max_tokens\":" + std::to_string(cfg.maxTokens > 0 ? cfg.maxTokens : 16000);
+    if (!system_.empty())
+      b += ",\"system\":[{\"type\":\"text\",\"text\":" + jsonQuote(system_) + ",\"cache_control\":{\"type\":\"ephemeral\"}}]";
+    b += ",\"messages\":[";
     for (size_t i = 0; i < history_.size(); ++i)
       b += std::string(i ? "," : "") + "{\"role\":\"" + (i % 2 == 0 ? "user" : "assistant") +
            "\",\"content\":" + jsonQuote(history_[i]) + "}";
@@ -213,6 +337,8 @@ void ChatSession::accept(const std::string& userText, const std::string& reply, 
   history_.push_back(reply);
   while (maxTurns >= 0 && history_.size() > (size_t)maxTurns * 2) history_.erase(history_.begin(), history_.begin() + 2);
 }
+
+// ---------- reply parsing ----------
 
 namespace {
 

@@ -703,7 +703,7 @@ TEST(chat_anthropic_config) {
   CHECK(c.requestUrl() == c.endpoint());  // the key never goes into the address
   std::vector<std::pair<std::string, std::string>> want = {
       {"x-api-key", "sk-ant-x"},
-      {"anthropic-version", "2023-06-01"},
+      {"anthropic-version", "2026-10-21"},
       {"anthropic-beta", "server-side-fallback-2026-07-01"}};
   CHECK(c.headers() == want);
   // what the user sets wins; a base that already names the version or the path is not repeated
@@ -723,13 +723,19 @@ TEST(chat_anthropic_request_body) {
   std::string b = s.requestBody(c, "红茶");
   CHECK(b.find("\"model\":\"claude-opus-5-5\"") != std::string::npos);
   CHECK(b.find("\"max_tokens\":16000") != std::string::npos);
-  CHECK(b.find("\"system\":\"你是贝尔法斯特\"") != std::string::npos);
+  CHECK(b.find("\"system\":[{\"type\":\"text\",\"text\":\"你是贝尔法斯特\",\"cache_control\":{\"type\":\"ephemeral\"}}]") !=
+        std::string::npos);  // the persona is the cached prefix
   CHECK(b.find("\"messages\":[{\"role\":\"user\",\"content\":\"早\"},{\"role\":\"assistant\",\"content\":\"早安，指挥官\"},"
                "{\"role\":\"user\",\"content\":\"红茶\"}]") != std::string::npos);
   CHECK(b.find("\"output_config\":{\"effort\":\"low\"}") != std::string::npos);
   CHECK(b.find("\"fallbacks\":\"default\"") != std::string::npos);
   CHECK(b.find("temperature") == std::string::npos);  // Opus 5.5 rejects sampling parameters
   CHECK(b.find("\"role\":\"system\"") == std::string::npos);  // the system prompt is top-level here
+  ChatConfig d = ChatConfig::parse("[chat]\napi=anthropic\napi_key=k\nmax_tokens=2048\nfallbacks=0\n");
+  CHECK_EQ(d.maxTokens, 2048);
+  CHECK(!d.fallbacks && d.headers().size() == 2);  // no beta header once the user turned the fallback off
+  b = s.requestBody(d, "红茶");
+  CHECK(b.find("\"max_tokens\":2048") != std::string::npos && b.find("fallbacks") == std::string::npos);
 }
 
 TEST(chat_parse_anthropic_reply) {
@@ -784,7 +790,7 @@ TEST(chat_anthropic_fallback_only_where_supported) {
     ChatSession s;
     s.reset("p");
     CHECK(s.requestBody(c, "hi").find("fallbacks") == std::string::npos);
-    std::vector<std::pair<std::string, std::string>> want = {{"x-api-key", "k"}, {"anthropic-version", "2023-06-01"}};
+    std::vector<std::pair<std::string, std::string>> want = {{"x-api-key", "k"}, {"anthropic-version", "2026-10-21"}};
     CHECK(c.headers() == want);
   }
   // an empty reasoning_effort sends none (for models without effort)
@@ -885,6 +891,89 @@ TEST(chat_clip_and_prompt) {
   std::string p = chatSystemPrompt("贝尔法斯特", "改造", {"欢迎回来"}, 60);
   CHECK(p.find("贝尔法斯特") != std::string::npos && p.find("改造") != std::string::npos);
   CHECK(p.find("60") != std::string::npos && p.find("- 欢迎回来") != std::string::npos);
+}
+
+TEST(chat_key_from_credentials_and_fallbacks) {
+  CHECK(ChatConfig::keyFromCredentials("[default]\nanthropic_api_key = sk-ant-abc\n") == "sk-ant-abc");
+  CHECK(ChatConfig::keyFromCredentials("; comment\n[default]\napi_key=sk-2\n") == "sk-2");
+  CHECK(ChatConfig::keyFromCredentials("anthropic_api_key=sk-3\n") == "sk-3");  // no section header
+  CHECK(ChatConfig::keyFromCredentials("").empty());
+  ChatConfig c = ChatConfig::parse("[chat]\napi=anthropic\napi_key=\n");
+  CHECK(!c.ready());
+  c.useKeyIfEmpty("");
+  CHECK(!c.ready());
+  c.useKeyIfEmpty("sk-file");
+  CHECK(c.ready() && c.apiKey == "sk-file");
+  c.useKeyIfEmpty("sk-env");  // the first source that has a key wins
+  CHECK(c.apiKey == "sk-file");
+}
+
+TEST(chat_persona_prompt_groups_all_outfits) {
+  VoiceBank vb = VoiceBank::parseTsv(
+      "skin\tkey\tindex\toath\tzh\tjp\n"
+      "02\tprofile\t1\t0\t贵安，我是贝尔法斯特\t\n"
+      "02\tlogin\t1\t0\t欢迎回来，指挥官\t\n"
+      "02\tlogin\t2\t1\t欢迎回来，我的指挥官\t\n"
+      "02\tmain\t1\t0\t要来一杯红茶吗\t\n"
+      "02\tfeeling5\t1\t0\t守护在您身边是我的幸福\t\n"
+      "02\tcouple_encourage\t1\t0\t（爱丁堡）姐姐，一起加油吧\t\n"
+      "03\tdesc\t1\t0\t这一身就这么让您吃惊吗\t\n"
+      "03\thome\t1\t0\t请用，这是糕点\t\n"
+      "10\tpropose\t1\t0\t这下麻烦了呢\t\n");
+  Persona p;
+  p.shipName = "贝尔法斯特";
+  p.outfit = "彩云之玫瑰";
+  p.voiceSkin = "03";
+  p.skinNames = {{"02", "默认女仆装"}, {"03", "彩云之玫瑰"}, {"10", "克拉达的誓约"}};
+  p.voices = &vb;
+  p.maxReplyChars = 60;
+  std::string s = chatPersonaPrompt(p);
+  CHECK(s.find("舰船少女贝尔法斯特") != std::string::npos);
+  CHECK(s.find("【角色自述】\n贵安，我是贝尔法斯特") != std::string::npos);
+  size_t cur = s.find("【衣装「彩云之玫瑰」】（你现在穿着这套）"), def = s.find("【衣装「默认女仆装」】");
+  CHECK(cur != std::string::npos && def != std::string::npos && cur < def);  // the current outfit comes first
+  CHECK(s.find("- 衣装介绍：这一身就这么让您吃惊吗") != std::string::npos);
+  CHECK(s.find("- 回港：请用，这是糕点") != std::string::npos);
+  CHECK(s.find("- 登录：欢迎回来，指挥官") != std::string::npos);
+  CHECK(s.find("- 主界面闲聊：要来一杯红茶吗") != std::string::npos);
+  CHECK(s.find("- 好感度·爱：守护在您身边是我的幸福") != std::string::npos);
+  CHECK(s.find("- 鼓励同伴：（爱丁堡）姐姐，一起加油吧") != std::string::npos);
+  CHECK(s.find("【衣装「克拉达的誓约」】\n- 誓约：这下麻烦了呢") != std::string::npos);
+  CHECK(s.find("欢迎回来，我的指挥官") == std::string::npos);  // post-oath line stays out before the oath
+  CHECK(s.find("贵安，我是贝尔法斯特") == s.rfind("贵安，我是贝尔法斯特"));  // profile is not repeated under the outfit
+  CHECK(s.find("你现在穿着「彩云之玫瑰」。") != std::string::npos && s.find("缔结了誓约") == std::string::npos);
+  CHECK(s.find("不超过60字") != std::string::npos);
+  CHECK(s.find("不要原样背诵") != std::string::npos);
+  p.oath = true;
+  p.voiceSkin = "10";
+  p.outfit = "克拉达的誓约";
+  s = chatPersonaPrompt(p);
+  CHECK(s.find("- 登录：欢迎回来，我的指挥官") != std::string::npos);
+  CHECK(s.find("你现在穿着「克拉达的誓约」。你已经和指挥官缔结了誓约。") != std::string::npos);
+  CHECK(s.find("【衣装「克拉达的誓约」】（你现在穿着这套）") < s.find("【衣装「默认女仆装」】"));
+  // generic lines (assets/lines.txt) have no outfit and no scene
+  VoiceBank plain = VoiceBank::parsePlain("指挥官，有什么吩咐吗？\n");
+  Persona q;
+  q.shipName = "信浓";
+  q.outfit = "默认";
+  q.voices = &plain;
+  s = chatPersonaPrompt(q);
+  CHECK(s.find("【台词】\n- 指挥官，有什么吩咐吗？") != std::string::npos);
+}
+
+TEST(chat_persona_skin_names_follow_voice_tables) {
+  Persona p;
+  Ini ini = Ini::parse("[ship]\nname=贝尔法斯特\nvoice_11=01\n");
+  p.addSkinName("01-改造.png", ini);
+  p.addSkinName("Q版-01-改造", ini);
+  p.addSkinName("11-改造 无舰装.png", ini);  // borrows table 01: already named
+  p.addSkinName("02-默认女仆装.png", ini);
+  p.addSkinName("Q版-12-小贝法", ini);
+  p.addSkinName("belfast.png", ini);  // no number: ignored
+  CHECK_EQ(p.skinNames.size(), (size_t)3);
+  CHECK(p.skinNames[0].first == "01" && p.skinNames[0].second == "改造");
+  CHECK(p.skinNames[1].first == "02" && p.skinNames[1].second == "默认女仆装");
+  CHECK(p.skinNames[2].first == "12" && p.skinNames[2].second == "小贝法");
 }
 
 // ---------- yield ----------
