@@ -58,17 +58,10 @@ def build_painting(src, dst):
 
 
 def quantize(folder):
-    """256-colour palette PNGs via pngquant (visually lossless for these sprites, ~1/3 the size)."""
-    import shutil
-    import subprocess
-    exe = shutil.which("pngquant")
-    if not exe:
-        return "pngquant not found; frames left as full-colour PNG"
-    files = [os.path.join(dp, f) for dp, _, fs in os.walk(folder) for f in fs if f.endswith(".png")]
-    for i in range(0, len(files), 200):
-        subprocess.run([exe, "--quality=80-98", "--speed=1", "--strip", "--skip-if-larger", "--force", "--ext", ".png",
-                        *files[i:i + 200]], check=False)
-    return None
+    """256-colour palette PNGs (visually lossless for these sprites, ~1/3 the size): pngquant, or
+    the imagequant package where pngquant is not installed (see render38.quantize_files)."""
+    import render38
+    return render38.quantize(folder)
 
 
 def build_sd(model, dst):

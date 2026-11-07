@@ -11,9 +11,13 @@ the pet does not jump between states; grounded states that the game authors belo
 model origin (sit and sleep, made for dorm furniture) are raised to rest where idle does.
 Frames face right; the app mirrors them.
 
-Without --map, each state picks the first suitable animation from STATE_CANDIDATES:
-showy skins whose idle spans a whole stage fall back to a calmer idle, and random idle
-actions that are much bigger than the character are left out.
+Without --map, each state picks the first suitable animation from STATE_CANDIDATES. The
+idle is the shortest calm loop (normal, the battle standby); the game's other animations
+become random one-shot actions (blink_* folders): the dorm idles stand and stand2 (the
+skin's signature loops), sit, dance, victory, wash, skill, attack, and idol/jump where a
+model has them. Actions much bigger than the character (MAX_AREA_RATIO: every state shares
+one canvas) or longer than MAX_ONESHOT_SEC are left out; stand2 is left out when it is the
+same loop as stand, and the loop the idle plays is not repeated as an action.
 """
 import argparse
 import ctypes
@@ -33,6 +37,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # state folder -> candidate animations in order of preference. Folders "<state>_<suffix>"
 # are extra variants of <state>: blink_* are random idle actions, react_head is the head pat.
+# A model without any candidate of an optional state simply gets no folder for it. Not
+# exported: dead, move/move_left (walk variants) and attack_left (the mirror of attack).
 STATE_CANDIDATES = [
     ("idle", ["stand2", "normal", "stand"]),
     ("walk", ["walk", "move"]),
@@ -42,21 +48,41 @@ STATE_CANDIDATES = [
     ("react_head", ["motou", "touch"]),
     ("sleep", ["sleep"]),
     ("land", ["yun"]),
+    ("blink_stand", ["stand"]),      # dorm idle
+    ("blink_stand2", ["stand2"]),    # second dorm idle (often the same loop as stand: see choose_states)
     ("blink_sit", ["sit"]),
     ("blink_dance", ["dance"]),
     ("blink_victory", ["victory"]),
+    ("blink_wash", ["wash"]),
+    ("blink_skill", ["skill"]),
+    ("blink_attack", ["attack"]),
+    ("blink_idol", ["idol"]),        # nengdai_idol only
+    ("blink_jump", ["jump"]),        # nengdai_idol only
 ]
 REQUIRED = {"idle", "walk", "drag", "fall", "react", "sleep"}
-MAX_AREA_RATIO = 1.8   # vs. the smallest idle candidate; larger animations are skipped
-MAX_ONESHOT_SEC = 5.0  # optional one-shot actions longer than this are skipped (RAM, CPU)
+MAX_AREA_RATIO = 1.8    # vs. the smallest idle candidate; larger animations are skipped
+MAX_ONESHOT_SEC = 30.0  # optional one-shot actions longer than this are skipped (disk, CPU)
+SAME_LOOP_SEC = 0.1     # stand and stand2 of equal length (within this) are one loop
+
+
+def build_raster(src, lib):
+    import shutil
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if not cc:
+        raise SystemExit(f"no C compiler (cc, gcc or clang) on PATH to build {lib} from {src}")
+    subprocess.check_call([cc, "-O3", "-shared", "-fPIC", "-o", lib, src, "-lm"])
 
 
 def load_raster():
     src = os.path.join(HERE, "raster.c")
     lib = os.path.join(HERE, "_raster.so")
     if not os.path.exists(lib) or os.path.getmtime(lib) < os.path.getmtime(src):
-        subprocess.check_call(["cc", "-O3", "-shared", "-fPIC", "-o", lib, src, "-lm"])
-    so = ctypes.CDLL(lib)
+        build_raster(src, lib)
+    try:
+        so = ctypes.CDLL(lib)
+    except OSError:  # built on another platform (the folder may be synced between a Mac and a PC)
+        build_raster(src, lib)
+        so = ctypes.CDLL(lib)
     fp = ctypes.POINTER(ctypes.c_float)
     ip = ctypes.POINTER(ctypes.c_int)
     so.draw_tris.argtypes = [fp, ctypes.c_int, ctypes.c_int, fp, ctypes.c_int, ctypes.c_int, fp, fp, ip, ctypes.c_int,
@@ -425,6 +451,16 @@ def choose_states(model, fps, log=print):
             sized = [(area(box_of(c)), c) for c in cands if model.anim(c) and box_of(c)]
             if sized:
                 chosen[state] = model.anim(min(sized)[1])
+    # The two dorm idles: of equal length they are one loop (exported once, as blink_stand),
+    # and the loop the idle already plays is not an extra action.
+    idle = chosen["idle"].name
+    stand, stand2 = model.anim("stand"), model.anim("stand2")
+    same = bool(stand and stand2 and abs(stand.duration - stand2.duration) < SAME_LOOP_SEC)
+    for state, own, twin in (("blink_stand", "stand", "stand2"), ("blink_stand2", "stand2", "stand")):
+        if state in chosen and (idle == own or (same and (idle == twin or state == "blink_stand2"))):
+            why = "the idle's own loop" if idle == own else "the same loop as " + twin
+            log(f"  skip {own:10s} for {state:13s}: {why}")
+            del chosen[state]
     return chosen
 
 
@@ -475,7 +511,9 @@ def export(model_dir, out_dir, fps=10.0, scale=None, ss=3, mapping=None, char_px
         ib = m.visible_box([(idle_anim, idle_times[::3] or idle_times)], step=1)
         scale = char_px / max(1.0, ib[3] - ib[1])
     pad = 6 / scale
-    vbs = {s: m.visible_box([(a, t)]) for s, (a, t) in plan.items()}
+    # every frame: the apex of a reaction (touch) is one frame long and was cut off when only
+    # every other frame was measured
+    vbs = {s: m.visible_box([(a, t)], step=1) for s, (a, t) in plan.items()}
     vb = union_box(vbs.values())
     lift = ground_lifts(m, plan, (vb[0] - pad, min(vb[1], 0.0) - pad, vb[2] + pad, vb[3] + pad), scale)
     vb = union_box((b[0], b[1] + lift.get(s, 0.0), b[2], b[3] + lift.get(s, 0.0)) for s, b in vbs.items() if b)
@@ -519,24 +557,44 @@ REACT_SEC = 1.6  # length of the expression reactions cut from the start of the 
 
 
 def quantize(folder):
-    """256-colour palette PNGs via pngquant (same settings as tools/build_ships.py)."""
-    import shutil
-    exe = shutil.which("pngquant")
-    if not exe:
-        return "pngquant not found; frames left as full-colour PNG"
+    """256-colour palette PNGs (same settings as tools/build_ships.py); see quantize_files."""
     files = [os.path.join(dp, f) for dp, _, fs in os.walk(folder) for f in fs if f.endswith(".png")]
-    for i in range(0, len(files), 200):
-        subprocess.run([exe, "--quality=80-98", "--speed=1", "--strip", "--skip-if-larger", "--force", "--ext", ".png",
-                        *files[i:i + 200]], check=False)
-    return None
+    return quantize_files(files, "80-98")
 
 
 def quantize_files(files, quality):
+    """256-colour palette PNGs: pngquant when it is installed, otherwise the same engine through
+    the imagequant package (pip install imagequant; Windows has no pngquant package). A frame
+    whose quality floor cannot be met, or that would not get smaller, is left as it is.
+    Returns a note when neither tool is there (the frames then stay full-colour PNG)."""
     import shutil
     exe = shutil.which("pngquant")
-    for i in range(0, len(files), 200):
-        subprocess.run([exe, f"--quality={quality}", "--speed=1", "--strip", "--skip-if-larger", "--force", "--ext", ".png",
-                        *files[i:i + 200]], check=False)
+    if exe:
+        for i in range(0, len(files), 200):
+            subprocess.run([exe, f"--quality={quality}", "--speed=1", "--strip", "--skip-if-larger", "--force",
+                            "--ext", ".png", *files[i:i + 200]], check=False)
+        return None
+    try:
+        import imagequant
+    except ImportError:
+        return "neither pngquant nor the imagequant package found; frames left as full-colour PNG"
+    lo, hi = (int(q) for q in quality.split("-"))
+    for f in files:
+        with Image.open(f) as im:
+            if im.mode == "P":
+                continue  # already a palette
+            rgba = im.convert("RGBA")
+        try:
+            q = imagequant.quantize_pil_image(rgba, dithering_level=1.0, max_colors=256, min_quality=lo, max_quality=hi)
+        except Exception:  # noqa: BLE001 - the floor cannot be met: keep the full-colour frame
+            continue
+        tmp = f + ".q"
+        q.save(tmp, format="PNG", optimize=True)
+        if os.path.getsize(tmp) < os.path.getsize(f):
+            os.replace(tmp, f)
+        else:
+            os.remove(tmp)
+    return None
 
 
 def open_painting(skel_path, pma="auto"):
