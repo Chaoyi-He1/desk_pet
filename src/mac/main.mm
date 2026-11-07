@@ -1044,7 +1044,7 @@ struct Ship {
   req.HTTPBody = [NSData dataWithBytes:body.data() length:body.size()];
   chatBusy_ = true;
   chatPanel_.field.enabled = NO;
-  [self showBubble:(study ? "（让我先回想一下自己……）" : "……")];
+  [self showBubble:"……"];
   int maxTurns = cc.maxTurns, maxChars = cc.maxReplyChars;
   [[[NSURLSession sharedSession]
       dataTaskWithRequest:req

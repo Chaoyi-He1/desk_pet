@@ -824,8 +824,7 @@ void sendChat(App& app, const std::wstring& raw) {
     pet::ChatSession study;
     study.reset(pet::chatStudySystemPrompt());
     app.pendingChat = narrow(text);
-    if (startChatJob(app, cc, "", study.requestBody(cc, pet::chatStudyUserPrompt(p)), true))
-      showChatBubble(app, "（让我先回想一下自己……）");
+    if (startChatJob(app, cc, "", study.requestBody(cc, pet::chatStudyUserPrompt(p)), true)) showChatBubble(app, "……");
     return;
   }
   prepareChatSession(app);
