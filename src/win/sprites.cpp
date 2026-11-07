@@ -52,6 +52,29 @@ bool isDirectory(const std::wstring& p) {
   return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+// A file in a cloud-synced folder (Dropbox, OneDrive...) can be "online-only": a placeholder
+// whose content is downloaded the first time it is read, a network round trip per frame.
+// Reading one on the UI thread freezes her, so such frames are not decoded until the
+// Hydrator has read them (she keeps showing the frame she has).
+bool isLocalFile(const std::wstring& path) {
+  DWORD a = GetFileAttributesW(path.c_str());
+  if (a == INVALID_FILE_ATTRIBUTES) return true;  // missing or unreadable: let the decoder report it
+  const DWORD remote = FILE_ATTRIBUTE_OFFLINE | 0x40000u /*RECALL_ON_OPEN*/ | 0x400000u /*RECALL_ON_DATA_ACCESS*/;
+  return (a & remote) == 0;
+}
+
+// Reads the whole file and drops the data: the sync client fetches it and the file is local.
+void readThrough(const std::wstring& path) {
+  HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return;
+  std::vector<char> buf(1 << 16);
+  DWORD got = 0;
+  while (ReadFile(h, buf.data(), (DWORD)buf.size(), &got, nullptr) && got) {
+  }
+  CloseHandle(h);
+}
+
 // Opaque bounding box of a premultiplied top-down 32-bit buffer.
 bool alphaBox(const uint32_t* px, int w, int h, int stride, int* x0, int* y0, int* x1, int* y1) {
   *x0 = w; *y0 = h; *x1 = -1; *y1 = -1;
@@ -71,7 +94,83 @@ bool alphaBox(const uint32_t* px, int w, int h, int stride, int* x0, int* y0, in
 
 }  // namespace
 
+// Reads a skin's frame files once on its own thread, in the order she is likely to need them,
+// so online-only placeholders are local before the UI thread asks for them; a frame the UI
+// thread wants right now goes first. The SpriteSet abandons it when it goes away, and the
+// object is freed by whichever of the two (SpriteSet, thread) lets go last.
+class SpriteSet::Hydrator {
+public:
+  static Hydrator* start(std::vector<std::wstring> files) {
+    Hydrator* h = new Hydrator(std::move(files));
+    HANDLE t = CreateThread(nullptr, 0, &Hydrator::main, h, 0, nullptr);
+    if (!t) {
+      delete h;
+      return nullptr;
+    }
+    CloseHandle(t);
+    return h;
+  }
+
+  void want(const std::wstring& path) {  // UI thread: this one next
+    AcquireSRWLockExclusive(&lock_);
+    bool queued = false;
+    for (const std::wstring& p : urgent_)
+      if (p == path) queued = true;
+    if (!queued) urgent_.push_back(path);
+    ReleaseSRWLockExclusive(&lock_);
+    WakeConditionVariable(&wake_);
+  }
+
+  void abandon() {  // UI thread: the SpriteSet is gone; never touched again by it
+    AcquireSRWLockExclusive(&lock_);
+    quit_ = true;
+    ReleaseSRWLockExclusive(&lock_);
+    WakeConditionVariable(&wake_);
+    release();
+  }
+
+private:
+  explicit Hydrator(std::vector<std::wstring> files) : files_(std::move(files)) {}
+  ~Hydrator() = default;
+
+  void release() {
+    if (InterlockedDecrement(&refs_) == 0) delete this;
+  }
+
+  static DWORD WINAPI main(LPVOID p) {
+    Hydrator* self = static_cast<Hydrator*>(p);
+    for (;;) {
+      AcquireSRWLockExclusive(&self->lock_);
+      while (!self->quit_ && self->urgent_.empty() && self->next_ >= self->files_.size())
+        SleepConditionVariableSRW(&self->wake_, &self->lock_, INFINITE, 0);
+      if (self->quit_) {
+        ReleaseSRWLockExclusive(&self->lock_);
+        break;
+      }
+      std::wstring path;
+      if (!self->urgent_.empty()) {  // the newest request is the frame closest to being shown
+        path = self->urgent_.back();
+        self->urgent_.pop_back();
+      } else {
+        path = self->files_[self->next_++];
+      }
+      ReleaseSRWLockExclusive(&self->lock_);
+      if (!isLocalFile(path)) readThrough(path);
+    }
+    self->release();
+    return 0;
+  }
+
+  volatile LONG refs_ = 2;  // the SpriteSet and the thread
+  SRWLOCK lock_ = SRWLOCK_INIT;
+  CONDITION_VARIABLE wake_ = CONDITION_VARIABLE_INIT;
+  std::vector<std::wstring> files_, urgent_;  // files_: in order of need; urgent_: asked for by the UI thread
+  size_t next_ = 0;
+  bool quit_ = false;
+};
+
 SpriteSet::~SpriteSet() {
+  if (hydrator_) hydrator_->abandon();
   for (auto& kv : cache_) DeleteObject(kv.second.bmp);
   if (transient_.bmp) DeleteObject(transient_.bmp);
   for (HBITMAP b : owned_) DeleteObject(b);
@@ -263,6 +362,12 @@ bool SpriteSet::loadAnimated(const std::wstring& dir, int height, bool exact, st
   groundInset_ = (int)std::lround(meta.getInt("sequence", "ground", 0) * scale_);
   headFraction_ = meta.getDouble("sequence", "head_fraction", 0.45);
   fps_ = meta.getInt("sequence", "fps", 10);
+  // Make the frame files local in the background (a cloud-synced folder keeps them online-only
+  // until something reads them): what she shows most of the time first, then the rest.
+  std::vector<std::wstring> files;
+  for (Anim a : {Anim::Idle, Anim::Walk, Anim::Blink, Anim::React, Anim::Drag, Anim::Fall, Anim::Land, Anim::Sleep})
+    for (auto& list : paths_[(int)a]) files.insert(files.end(), list.begin(), list.end());
+  hydrator_ = Hydrator::start(std::move(files));
   return true;
 }
 
@@ -287,6 +392,10 @@ SpriteFrame SpriteSet::cropToDib(const uint8_t* px, size_t stride) {
 SpriteFrame SpriteSet::decode(const std::wstring& path) {
   using namespace Gdiplus;
   SpriteFrame f;
+  if (!isLocalFile(path)) {  // online-only: fetched in the background; she keeps the frame she has
+    if (hydrator_) hydrator_->want(path);
+    return f;
+  }
   bool bpf = path.size() > 4 && _wcsicmp(path.c_str() + path.size() - 4, L".bpf") == 0;
   if (bpf) {
     // Palette + LZ4 frame: expand at source size, then scale to the display size.
@@ -378,10 +487,14 @@ SpriteFrame SpriteSet::get(Anim a, int variant, int index, bool mirrored) {
   if (stream_ || (ai != (int)Anim::Idle && ai != (int)Anim::Walk)) {
     if (key == transientKey_ && transient_.bmp) return transient_;
     SpriteFrame plain = decode(vars[v][i]);
+    if (!plain.bmp) return plain;  // not available (yet): the shell keeps the frame on screen, which stays valid
     SpriteFrame f = plain;
-    if (mirrored && plain.bmp) {
-      f = mirror(plain);
-      DeleteObject(plain.bmp);
+    if (mirrored) {
+      SpriteFrame m = mirror(plain);
+      if (m.bmp != plain.bmp) {
+        DeleteObject(plain.bmp);
+        f = m;
+      }
     }
     if (transient_.bmp) DeleteObject(transient_.bmp);
     transient_ = f;

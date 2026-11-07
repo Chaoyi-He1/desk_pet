@@ -54,6 +54,7 @@ public:
   SpriteFrame get(pet::Anim a, int variant, int index, bool mirrored);
 
 private:
+  class Hydrator;  // background reader that makes "online-only" frame files local (sprites.cpp)
   bool loadPainting(const std::wstring& png, int height, bool exact, std::wstring* err);
   bool loadAnimated(const std::wstring& dir, int height, bool exact, std::wstring* err);
   SpriteFrame decode(const std::wstring& path);
@@ -80,6 +81,7 @@ private:
   std::map<HBITMAP, SpriteFrame> mirrors_;                        // painting mirrors
   std::vector<HBITMAP> owned_;
   ULONG_PTR gdiplus_ = 0;
+  Hydrator* hydrator_ = nullptr;  // animated skins; abandoned (not deleted) by the destructor
 };
 
 }  // namespace petwin

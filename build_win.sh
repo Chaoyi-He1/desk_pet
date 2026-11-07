@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Cross-compile azure_lane_pet.exe on macOS/Linux with mingw-w64 and stage dist/azure_lane_pet-win/.
+# Build azure_lane_pet.exe with mingw-w64 and stage dist/azure_lane_pet-win/.
+# Cross-compiling on macOS/Linux (brew install mingw-w64), or natively on Windows in Git Bash
+# with a mingw-w64 GCC on PATH (e.g. winget install BrechtSanders.WinLibs.POSIX.UCRT).
+# SKIP_ASSETS=1 builds the exe only; without rsync (Git Bash) the assets are not staged either.
 set -euo pipefail
 cd "$(dirname "$0")"
-CXX=${CXX:-x86_64-w64-mingw32-g++}
-RES=${RES:-x86_64-w64-mingw32-windres}
+CXX=${CXX:-$(command -v x86_64-w64-mingw32-g++ || command -v g++)}
+RES=${RES:-$(command -v x86_64-w64-mingw32-windres || command -v windres)}
+STRIP=${STRIP:-$(command -v x86_64-w64-mingw32-strip || command -v strip || true)}
 OUT=dist/azure_lane_pet-win
 mkdir -p build/win "$OUT"
 
@@ -13,8 +17,14 @@ mkdir -p build/win "$OUT"
   -I src src/core/*.cpp src/win/*.cpp build/win/resource.o \
   -o "$OUT/azure_lane_pet.exe" \
   -lgdiplus -lgdi32 -luser32 -lshell32 -ladvapi32 -lole32 -lwinhttp -loleacc -loleaut32 -ldwmapi -luuid
-x86_64-w64-mingw32-strip "$OUT/azure_lane_pet.exe" 2>/dev/null || true
+[ -n "$STRIP" ] && "$STRIP" "$OUT/azure_lane_pet.exe" 2>/dev/null || true
 
-rm -rf "$OUT/assets"
-rsync -a --delete --exclude /official/ --exclude /skins/ --exclude /voice/ --exclude /belfast.png --exclude '*.jpg' --exclude '*.jpeg' --exclude .DS_Store assets/ "$OUT/assets/"
-echo "built $OUT/azure_lane_pet.exe"
+if [ "${SKIP_ASSETS:-0}" = 1 ]; then
+  echo "built $OUT/azure_lane_pet.exe (assets not staged)"
+elif command -v rsync >/dev/null; then
+  rm -rf "$OUT/assets"
+  rsync -a --delete --exclude /official/ --exclude /skins/ --exclude /voice/ --exclude /belfast.png --exclude '*.jpg' --exclude '*.jpeg' --exclude .DS_Store assets/ "$OUT/assets/"
+  echo "built $OUT/azure_lane_pet.exe"
+else
+  echo "built $OUT/azure_lane_pet.exe (no rsync: assets not staged, $OUT/assets left as it is)"
+fi

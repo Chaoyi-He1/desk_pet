@@ -25,7 +25,7 @@
 | Live2D | 18–19 MB | 0.7–1.0% |
 | 动态立绘 | 21–22 MB | 1.5–2.4% |
 
-Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测过占用。
+Windows 上实测（Ryzen 7 9700X）：Q 版待机约 1% 单核、30 MB。
 
 ## 功能
 
@@ -65,6 +65,8 @@ Windows 版在 macOS 上交叉编译，没有在真实 Windows 上测过占用�
 第一次启动默认显示柴郡的 Q 版童年形象，右键「切换形象」可以换。
 
 **Windows**：解压 `azure_lane_pet-win`，双击 `azure_lane_pet.exe`。
+
+不要把它放在 Dropbox、OneDrive 这类同步盘里运行：同步盘会把没打开过的文件留成「仅在线」占位符，每一帧第一次显示时都要先从网上下载，她就会一卡一卡的。程序会在后台把当前形象的帧先读成本地文件，期间她只是少动几帧，不会整个僵住；但最好还是把文件夹复制到本地磁盘，或者在同步盘里把它设成「始终保留在此设备上」（Dropbox 叫「设为可离线使用」）。
 
 **macOS**：把 `azure_lane_pet.app` 拖到「应用程序」后双击。Apple 芯片和 Intel 的 Mac 都能用（macOS 12 以上）。首次运行如果提示无法验证开发者，右键 app 选「打开」；还打不开就到 系统设置 → 隐私与安全性 里点「仍要打开」。
 
@@ -130,7 +132,7 @@ Cubism Core 是 Live2D 的专有软件，使用前需同意它的许可协议（
 
 游戏里 Q 版的原始贴图很小（小人约 265 像素高），直接放大会发虚。`tools/spine/upscale.py` 先用 Real-ESRGAN 动漫模型把贴图放大 2 倍再渲染，Retina 屏上默认大小基本是 1:1 显示。网络结构在脚本里自己定义，权重以只读张量方式加载。
 
-运行时 macOS 把帧存成调色板索引（每像素 1 字节），只在显示时把当前帧展开到两块轮流使用的 IOSurface 里；Windows 在首次显示时解码并缩放到屏幕尺寸。两边都只常驻待机和走路的帧，其余动作用到时再解码。
+运行时 macOS 把帧存成调色板索引（每像素 1 字节），只在显示时把当前帧展开到两块轮流使用的 IOSurface 里；Windows 在首次显示时解码并缩放到屏幕尺寸，同步盘里「仅在线」的帧由后台线程先读成本地文件，读好之前不在界面线程上等它。两边都只常驻待机和走路的帧，其余动作用到时再解码。
 
 ## 配置 `assets/config.ini`
 
@@ -156,7 +158,7 @@ clang++ -std=c++17 -I src tests/test_core.cpp src/core/*.cpp -o build/test_core 
 
 - **macOS**：`./build_mac.sh`，输出 `dist/azure_lane_pet.app`（Apple 芯片和 Intel 通用）。要发给别人时再运行 `./package_mac.sh`，得到 `dist/azure_lane_pet-mac.zip`，里面附了一份打开方法说明。
   - 默认是临时（ad-hoc）签名，每次重新构建后，「辅助功能」授权都会失效。自己常构建的话，先运行一次 `tools/setup_mac_signing.sh`：它在单独的钥匙串里做一张本机自签名证书，之后 `build_mac.sh` 用它签名，授权就不再失效（第一次换签名时要在辅助功能列表里删掉旧的 azure_lane_pet 再重新加）。`package_mac.sh` 打出的压缩包仍是临时签名。
-- **Windows（在 Windows 上）**：装好 Visual Studio 2022 或 MinGW-w64 和 CMake，运行 `build.bat`。
+- **Windows（在 Windows 上）**：`winget install BrechtSanders.WinLibs.POSIX.UCRT` 装 MinGW-w64 GCC，把它的 `mingw64\bin` 加进 PATH，在 Git Bash 里运行 `./build_win.sh`（没有 rsync 时只编译 exe，不复制素材；`SKIP_ASSETS=1` 也是只编译 exe）。或者装 Visual Studio 2022 和 CMake，运行 `build.bat`。
 - **Windows（在 macOS / Linux 上交叉编译）**：`brew install mingw-w64` 后运行 `./build_win.sh`，输出 `dist/azure_lane_pet-win/`。
 
 打包脚本会把 `assets/ships/` 一起放进去。

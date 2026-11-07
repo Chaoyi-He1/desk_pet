@@ -103,6 +103,9 @@ struct App {
   int timerMs = -1;
   bool userHidden = false, fsHidden = false;
   pet::Frame last;
+  // A line to say once she is on screen (her first frame may still be on its way: sprites.cpp).
+  bool hasPendingLine = false;
+  pet::Scene pendingLine = pet::Scene::Login;
   NOTIFYICONDATAW nid = {};
   HICON icon = nullptr;
   // yield to controls behind her (docs/superpowers/specs/2026-09-30-yield-to-controls-design.md)
@@ -352,6 +355,11 @@ std::string voiceSkin(const App& app, bool* oath) {
 
 void say(App& app, pet::Scene scene) {
   if (app.ship < 0 || !app.brain || app.last.visible == false) return;
+  if (!IsWindowVisible(app.hwnd)) {  // nothing to put the bubble on yet: once she appears
+    app.hasPendingLine = true;
+    app.pendingLine = scene;
+    return;
+  }
   bool oath = false;
   std::string skin = voiceSkin(app, &oath);
   std::string fallback = app.ships[app.ship].ini.get("ship", "default_voice", "01");
@@ -405,6 +413,10 @@ void applyFrame(App& app, const pet::Frame& f) {
     present(app);
     ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
     startFade(app, +1);
+    if (app.hasPendingLine) {
+      app.hasPendingLine = false;
+      say(app, app.pendingLine);
+    }
   } else if (sameImage) {
     SetWindowPos(app.hwnd, nullptr, wx, wy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
   } else {
