@@ -127,7 +127,7 @@ struct Ship {
 // A small key window with one text field; Enter sends, Esc closes.
 @interface ChatPanel : NSPanel <NSTextFieldDelegate>
 @property(nonatomic, strong) NSTextField* field;
-@property(nonatomic, copy) void (^onSend)(NSString*);
+@property(nonatomic, copy) BOOL (^onSend)(NSString*);  // YES when the line went out
 @end
 
 @implementation ChatPanel
@@ -167,7 +167,8 @@ struct Ship {
   NSString* t = [self.field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   if (t.length == 0 || !self.field.enabled) return;
   self.field.stringValue = @"";
-  if (self.onSend) self.onSend(t);
+  // One line is usually all she gets: the panel goes away with it, until the menu opens it again.
+  if (self.onSend && self.onSend(t)) [self orderOut:nil];
 }
 - (void)cancelOperation:(id)sender { [self orderOut:nil]; }
 - (BOOL)control:(NSControl*)c textView:(NSTextView*)tv doCommandBySelector:(SEL)sel {
@@ -955,7 +956,7 @@ struct Ship {
   if (!chatPanel_) {
     chatPanel_ = [[ChatPanel alloc] init];
     __weak PetController* weakSelf = self;
-    chatPanel_.onSend = ^(NSString* text) { [weakSelf sendChat:text]; };
+    chatPanel_.onSend = ^BOOL(NSString* text) { return [weakSelf sendChat:text]; };
   }
   CGFloat sh = screenH();
   NSRect work = [self petScreen].visibleFrame;
@@ -1010,10 +1011,11 @@ struct Ship {
          durationMs:pet::bubbleDurationMs(text, bubbleMs_) + 2000];
 }
 
-- (void)sendChat:(NSString*)text {
-  if (chatBusy_) return;
+// Sends one line to her; YES when the request went out.
+- (BOOL)sendChat:(NSString*)text {
+  if (chatBusy_) return NO;
   pet::ChatConfig cc = [self chatConfig];
-  if (!cc.ready()) return;
+  if (!cc.ready()) return NO;
   std::string user = text.UTF8String;
   pet::Persona p = [self buildPersona];
   std::string key = pet::personaStudyKey(p), profile;
@@ -1022,19 +1024,18 @@ struct Ship {
     pet::ChatSession study;
     study.reset(pet::chatStudySystemPrompt());
     pendingChat_ = user;
-    [self postChat:cc user:"" body:study.requestBody(cc, pet::chatStudyUserPrompt(p)) study:true];
-    return;
+    return [self postChat:cc user:"" body:study.requestBody(cc, pet::chatStudyUserPrompt(p)) study:true];
   }
   [self prepareChatSession];
-  [self postChat:cc user:user body:chat_.requestBody(cc, user) study:false];
+  return [self postChat:cc user:user body:chat_.requestBody(cc, user) study:false];
 }
 
 // One request to the model: her answer to `user`, or her character file when `study`.
-- (void)postChat:(pet::ChatConfig)cc user:(std::string)user body:(std::string)body study:(bool)study {
+- (BOOL)postChat:(pet::ChatConfig)cc user:(std::string)user body:(std::string)body study:(bool)study {
   NSURL* url = [NSURL URLWithString:@(cc.requestUrl().c_str())];
   if (!url) {
     [self showBubble:"聊天设置里的 base_url 不是有效地址"];
-    return;
+    return NO;
   }
   NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
   req.HTTPMethod = @"POST";
@@ -1071,6 +1072,7 @@ struct Ship {
               } else {
                 studyFailed_ = k;  // this run she answers from her lines; Enter sends the text again
                 chatPanel_.field.stringValue = @(pending.c_str());
+                [self openChat:nil];  // the panel comes back with the line still in it
                 [self showBubble:"（没能整理出角色档案：" + (errText.empty() ? why : errText) + "）"];
               }
               return;
@@ -1088,6 +1090,7 @@ struct Ship {
               NSLog(@"chat reply=[%s] why=[%s] net=[%s] turns=%zu", reply.c_str(), why.c_str(), errText.c_str(), chat_.turns());
           });
         }] resume];
+  return YES;
 }
 
 - (void)toggleHidden:(id)s {

@@ -811,12 +811,13 @@ bool startChatJob(App& app, const pet::ChatConfig& cc, const std::string& user, 
   return true;
 }
 
-void sendChat(App& app, const std::wstring& raw) {
+// Sends one line to her; true when the request went out.
+bool sendChat(App& app, const std::wstring& raw) {
   const wchar_t* ws = L" \t\r\n\x3000";  // also the full-width space Chinese input methods type
   size_t a = raw.find_first_not_of(ws);
   std::wstring text = a == std::wstring::npos ? std::wstring() : raw.substr(a, raw.find_last_not_of(ws) - a + 1);
   pet::ChatConfig cc = chatConfig();
-  if (app.chatBusy || !cc.ready() || text.empty()) return;
+  if (app.chatBusy || !cc.ready() || text.empty()) return false;
   pet::Persona p = buildPersona(app);
   std::string key = pet::personaStudyKey(p), profile;
   if (!pet::personaCacheRead(readFile(personaFile(app)), key, &profile) && app.studyFailed != key) {
@@ -824,12 +825,11 @@ void sendChat(App& app, const std::wstring& raw) {
     pet::ChatSession study;
     study.reset(pet::chatStudySystemPrompt());
     app.pendingChat = narrow(text);
-    startChatJob(app, cc, "", study.requestBody(cc, pet::chatStudyUserPrompt(p)), true);
-    return;
+    return startChatJob(app, cc, "", study.requestBody(cc, pet::chatStudyUserPrompt(p)), true);
   }
   prepareChatSession(app);
   std::string user = narrow(text);
-  startChatJob(app, cc, user, app.chat.requestBody(cc, user), false);
+  return startChatJob(app, cc, user, app.chat.requestBody(cc, user), false);
 }
 
 WNDPROC g_editProc = nullptr;
@@ -839,7 +839,8 @@ LRESULT CALLBACK chatEditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     wchar_t buf[1024];
     GetWindowTextW(h, buf, 1024);
     SetWindowTextW(h, L"");
-    if (g_app) sendChat(*g_app, buf);
+    // One line is usually all she gets: the box goes away with it, until the menu opens it again.
+    if (g_app && sendChat(*g_app, buf)) ShowWindow(GetParent(h), SW_HIDE);
     return 0;
   }
   if (msg == WM_KEYDOWN && wp == VK_ESCAPE) {
@@ -1242,6 +1243,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         } else {
           app->studyFailed = key;  // this run she answers from her lines; Enter sends the text again
           if (app->chatEdit) SetWindowTextW(app->chatEdit, pending.c_str());
+          openChat(*app);  // the box comes back with the line still in it
           showChatBubble(*app, "（没能整理出角色档案：" + (res->netError.empty() ? why : res->netError) + "）");
         }
         return 0;
