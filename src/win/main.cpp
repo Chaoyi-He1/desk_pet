@@ -94,6 +94,8 @@ struct App {
   pet::ChatSession chat;
   std::string chatKey;
   bool chatBusy = false;
+  std::string pendingChat;   // what to send once she has studied herself
+  std::string studyFailed;   // study key that failed this run: answer from her lines instead
   int pendingWheel = 0;
   bool hideOnFullscreen = true, mirrorLeft = true, clickThrough = false;
   int bubbleMs = 3000, chatterMin = 20, savedX = -1;
@@ -664,6 +666,7 @@ void applyHeight(App& app, int height) {
 struct ChatResult {
   std::string user, body;  // body: HTTP response text
   std::string netError;
+  bool study = false;  // the reply is her character file, not an answer
 };
 
 std::wstring chatIniPath() { return userDataDir() + L"\\chat.ini"; }
@@ -700,12 +703,14 @@ struct ChatJob {
   std::vector<std::pair<std::string, std::string>> headers;  // besides Content-Type (pet::ChatConfig::headers)
   std::string body, user;
   int timeoutMs = 60000;
+  bool study = false;  // asks for her character file instead of an answer
 };
 
 DWORD WINAPI chatThread(LPVOID param) {
   std::unique_ptr<ChatJob> job((ChatJob*)param);
   ChatResult* res = new ChatResult();
   res->user = job->user;
+  res->study = job->study;
   URL_COMPONENTS uc = {};
   uc.dwStructSize = sizeof(uc);
   wchar_t host[256] = {}, path[2048] = {}, extra[2048] = {};
@@ -755,13 +760,13 @@ void showChatBubble(App& app, const std::string& text) {
                   pet::bubbleDurationMs(text, app.bubbleMs) + 2000);
 }
 
-void prepareChatSession(App& app) {
-  std::string key = narrow(app.ships[app.ship].key + L"/" + app.skin);
-  if (key == app.chatKey) return;
-  app.chatKey = key;
+// Her character file, written by the study: next to chat.ini, one per ship.
+std::wstring personaFile(const App& app) { return userDataDir() + L"\\persona-" + app.ships[app.ship].key + L".txt"; }
+
+// The ship, what she wears and her whole repertoire.
+pet::Persona buildPersona(const App& app) {
   bool oath = false;
   std::string vskin = voiceSkin(app, &oath);
-  // Her whole repertoire, so the model can study her before the first answer.
   const Ship& ship = app.ships[app.ship];
   pet::Persona p;
   p.shipName = narrow(ship.name);
@@ -771,7 +776,39 @@ void prepareChatSession(App& app) {
   for (const std::wstring& f : ship.skins) p.addSkinName(narrow(f), ship.ini);
   p.voices = app.voices.empty() ? &app.fallbackVoices : &app.voices;
   p.maxReplyChars = chatConfig().maxReplyChars;
-  app.chat.reset(pet::chatPersonaPrompt(p));
+  return p;
+}
+
+// The chat prompt for the current ship and skin, with her character file when there is one.
+void prepareChatSession(App& app) {
+  pet::Persona p = buildPersona(app);
+  std::string profile;
+  pet::personaCacheRead(readFile(personaFile(app)), pet::personaStudyKey(p), &profile);
+  std::string key = narrow(app.ships[app.ship].key + L"/" + app.skin) + (profile.empty() ? "" : "+profile");
+  if (key == app.chatKey) return;
+  app.chatKey = key;
+  app.chat.reset(pet::chatPersonaPrompt(p, profile));
+}
+
+// Posts one request on a worker thread; the reply comes back as WM_CHAT_DONE.
+bool startChatJob(App& app, const pet::ChatConfig& cc, const std::string& user, const std::string& body, bool study) {
+  ChatJob* job = new ChatJob();
+  job->notify = app.hwnd;
+  job->url = widen(cc.requestUrl());
+  job->headers = cc.headers();
+  job->timeoutMs = cc.reasoningEffort.empty() && !cc.anthropicApi ? 60000 : 120000;  // reasoning models think first
+  job->user = user;
+  job->body = body;
+  job->study = study;
+  HANDLE th = CreateThread(nullptr, 0, chatThread, job, 0, nullptr);
+  if (!th) {
+    delete job;
+    return false;
+  }
+  CloseHandle(th);
+  app.chatBusy = true;
+  if (app.chatEdit) EnableWindow(app.chatEdit, FALSE);
+  return true;
 }
 
 void sendChat(App& app, const std::wstring& raw) {
@@ -780,23 +817,20 @@ void sendChat(App& app, const std::wstring& raw) {
   std::wstring text = a == std::wstring::npos ? std::wstring() : raw.substr(a, raw.find_last_not_of(ws) - a + 1);
   pet::ChatConfig cc = chatConfig();
   if (app.chatBusy || !cc.ready() || text.empty()) return;
-  prepareChatSession(app);
-  ChatJob* job = new ChatJob();
-  job->notify = app.hwnd;
-  job->url = widen(cc.requestUrl());
-  job->headers = cc.headers();
-  job->timeoutMs = cc.reasoningEffort.empty() && !cc.anthropicApi ? 60000 : 120000;  // reasoning models think first
-  job->user = narrow(text);
-  job->body = app.chat.requestBody(cc, job->user);
-  HANDLE th = CreateThread(nullptr, 0, chatThread, job, 0, nullptr);
-  if (!th) {
-    delete job;
+  pet::Persona p = buildPersona(app);
+  std::string key = pet::personaStudyKey(p), profile;
+  if (!pet::personaCacheRead(readFile(personaFile(app)), key, &profile) && app.studyFailed != key) {
+    // First time with this ship (or her lines changed): she studies herself first, then answers.
+    pet::ChatSession study;
+    study.reset(pet::chatStudySystemPrompt());
+    app.pendingChat = narrow(text);
+    if (startChatJob(app, cc, "", study.requestBody(cc, pet::chatStudyUserPrompt(p)), true))
+      showChatBubble(app, "（让我先回想一下自己……）");
     return;
   }
-  CloseHandle(th);
-  app.chatBusy = true;
-  if (app.chatEdit) EnableWindow(app.chatEdit, FALSE);
-  showChatBubble(app, "……");
+  prepareChatSession(app);
+  std::string user = narrow(text);
+  if (startChatJob(app, cc, user, app.chat.requestBody(cc, user), false)) showChatBubble(app, "……");
 }
 
 WNDPROC g_editProc = nullptr;
@@ -1168,6 +1202,21 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       }
       pet::ChatConfig cc = chatConfig();
       std::string reply, why;
+      if (res->study) {  // her character file: keep it, then send what the user typed
+        std::wstring pending = widen(app->pendingChat);
+        app->pendingChat.clear();
+        std::string key = pet::personaStudyKey(buildPersona(*app));
+        if (res->netError.empty() && pet::parseChatReply(res->body, &reply, &why) && !pet::clipReply(reply, 1).empty()) {
+          std::ofstream out(personaFile(*app).c_str(), std::ios::binary | std::ios::trunc);
+          out << pet::personaCacheText(key, pet::clipReply(reply, 1 << 20));
+          sendChat(*app, pending);
+        } else {
+          app->studyFailed = key;  // this run she answers from her lines; Enter sends the text again
+          if (app->chatEdit) SetWindowTextW(app->chatEdit, pending.c_str());
+          showChatBubble(*app, "（没能整理出角色档案：" + (res->netError.empty() ? why : res->netError) + "）");
+        }
+        return 0;
+      }
       if (!res->netError.empty()) {
         showChatBubble(*app, "（" + res->netError + "）");
       } else if (pet::parseChatReply(res->body, &reply, &why)) {

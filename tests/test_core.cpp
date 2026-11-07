@@ -976,6 +976,86 @@ TEST(chat_persona_skin_names_follow_voice_tables) {
   CHECK(p.skinNames[2].first == "12" && p.skinNames[2].second == "小贝法");
 }
 
+TEST(chat_study_prompt_and_cache) {
+  VoiceBank vb = VoiceBank::parseTsv(
+      "skin\tkey\tindex\toath\tzh\tjp\n"
+      "02\tprofile\t1\t0\t贵安，我是贝尔法斯特\t\n"
+      "02\tlogin\t1\t0\t欢迎回来，指挥官\t\n"
+      "02\tlogin\t2\t1\t欢迎回来，我的指挥官\t\n"
+      "03\tdesc\t1\t0\t这一身就这么让您吃惊吗\t\n"
+      "03\tmain\t1\t0\t请用，这是糕点\t\n");
+  Persona p;
+  p.shipName = "贝尔法斯特";
+  p.outfit = "彩云之玫瑰";
+  p.voiceSkin = "03";
+  p.skinNames = {{"02", "默认女仆装"}, {"03", "彩云之玫瑰"}};
+  p.voices = &vb;
+  std::string u = chatStudyUserPrompt(p);
+  CHECK(u.find("贝尔法斯特在游戏里的全部官方台词") != std::string::npos);
+  CHECK(u.find("【角色自述】\n贵安，我是贝尔法斯特") != std::string::npos);
+  CHECK(u.find("【衣装「默认女仆装」】") < u.find("【衣装「彩云之玫瑰」】"));  // listed in order, not the outfit she wears first
+  CHECK(u.find("你现在穿着") == std::string::npos);  // the study does not depend on the outfit
+  CHECK(u.find("- 登录（誓约后）：欢迎回来，我的指挥官") != std::string::npos);  // post-oath lines are in, labelled
+  CHECK(u.find("- 衣装介绍：这一身就这么让您吃惊吗") != std::string::npos);
+  CHECK(u.find("不是一套衣装一个性格") != std::string::npos && u.find("600字") != std::string::npos);
+  CHECK(std::string(chatStudySystemPrompt()).find("角色设定师") != std::string::npos);
+  std::string key = personaStudyKey(p);
+  CHECK_EQ(key.size(), (size_t)16);
+  Persona q = p;
+  q.outfit = "默认女仆装";
+  q.voiceSkin = "02";
+  q.oath = true;
+  CHECK(personaStudyKey(q) == key);  // the outfit and the oath do not change what was studied
+  VoiceBank vb2 = VoiceBank::parseTsv("skin\tkey\tindex\toath\tzh\tjp\n02\tlogin\t1\t0\t欢迎回来，指挥官！\t\n");
+  q.voices = &vb2;
+  CHECK(personaStudyKey(q) != key);  // a changed line does
+  // the cache file round-trips and refuses another key or an empty profile
+  std::string text = personaCacheText(key, "1. 性格：温柔\n2. 说话方式：敬语");
+  std::string out;
+  CHECK(personaCacheRead(text, key, &out) && out == "1. 性格：温柔\n2. 说话方式：敬语");
+  CHECK(!personaCacheRead(text, "0000000000000000", &out));
+  CHECK(!personaCacheRead("", key, &out));
+  CHECK(!personaCacheRead(personaCacheText(key, "  \n"), key, &out));
+}
+
+TEST(chat_persona_prompt_with_profile) {
+  VoiceBank vb = VoiceBank::parseTsv(
+      "skin\tkey\tindex\toath\tzh\tjp\n"
+      "02\tlogin\t1\t0\t欢迎回来，指挥官\t\n"
+      "02\tlogin\t2\t1\t欢迎回来，我的指挥官\t\n"
+      "02\tmain\t1\t0\t要来一杯红茶吗\t\n"
+      "02\ttouch\t1\t0\t贸然触碰女士可不是绅士作为\t\n"
+      "02\thome\t1\t0\t茶点已经准备好了\t\n"
+      "02\tdetail\t1\t0\t指挥官，有什么吩咐吗\t\n"
+      "02\tmail\t1\t0\t有新邮件来了\t\n"
+      "03\tdesc\t1\t0\t这一身就这么让您吃惊吗\t\n"
+      "03\tlogin\t1\t0\t旗袍登录\t\n"
+      "03\thome\t1\t0\t请用，这是糕点\t\n");
+  Persona p;
+  p.shipName = "贝尔法斯特";
+  p.outfit = "彩云之玫瑰";
+  p.voiceSkin = "03";
+  p.skinNames = {{"02", "默认女仆装"}, {"03", "彩云之玫瑰"}};
+  p.voices = &vb;
+  p.maxReplyChars = 60;
+  std::string s = chatPersonaPrompt(p, "1. 性格：温柔而有主见");
+  CHECK(s.find("【角色档案】") != std::string::npos && s.find("1. 性格：温柔而有主见") != std::string::npos);
+  CHECK(s.find("你现在穿着「彩云之玫瑰」。这套衣装的介绍：这一身就这么让您吃惊吗") != std::string::npos);
+  CHECK(s.find("【语气参考】") != std::string::npos);
+  CHECK(s.find("- 登录：旗袍登录") < s.find("- 登录：欢迎回来，指挥官"));  // the outfit she wears comes first
+  CHECK(s.find("- 回港：请用，这是糕点") != std::string::npos && s.find("- 触摸：贸然触碰") != std::string::npos);
+  CHECK(s.find("有新邮件") == std::string::npos);  // a reminder of her voice, not every line
+  CHECK(s.find("【衣装「") == std::string::npos);  // no grouped dump once there is a profile
+  CHECK(s.find("欢迎回来，我的指挥官") == std::string::npos);  // post-oath line stays out before the oath
+  CHECK(s.find("按角色档案里的性格") != std::string::npos && s.find("不超过60字") != std::string::npos);
+  // without a profile her lines stand in for it, grouped, the outfit she wears first
+  std::string t = chatPersonaPrompt(p);
+  CHECK(t.find("【角色档案】") == std::string::npos);
+  CHECK(t.find("【衣装「彩云之玫瑰」】（你现在穿着这套）") < t.find("【衣装「默认女仆装」】"));
+  CHECK(t.find("- 有新邮件：有新邮件来了") != std::string::npos);
+  CHECK(t.find("这套衣装的介绍") == std::string::npos);
+}
+
 // ---------- yield ----------
 TEST(yield_cells_floor_and_center) {
   CHECK(cellAt(0, 0) == (Cell{0, 0}));

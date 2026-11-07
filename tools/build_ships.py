@@ -101,6 +101,7 @@ def main():
     ap.add_argument("--no-paint", action="store_true")
     ap.add_argument("--no-sd", action="store_true", help="skip rendering chibi (Q版) skins")
     ap.add_argument("--no-voice", action="store_true")
+    ap.add_argument("--only-voice", action="store_true", help="only rewrite ship.ini and voices.tsv (no pictures touched)")
     ap.add_argument("--only-animated", action="store_true", help="only copy dynamic-painting and Live2D skins")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2))
     a = ap.parse_args()
@@ -121,6 +122,8 @@ def main():
                 if s.get("voice"):
                     f.write(f"voice_{s['num']}={s['voice']}\n")
         for s in ship["skins"]:
+            if a.only_voice:
+                break
             label = f"{s['num']}-{safe(s['name'])}"
             if not a.no_paint and not a.only_animated and s.get("painting"):
                 src = os.path.join(OFFICIAL, s["painting"])
@@ -147,7 +150,8 @@ def main():
 
         if not a.no_voice:
             import fetch_voice as fv
-            html = fv.request(fv.page_url(ship["wiki_page"]), throttle=fv.Throttle())[1].decode("utf-8")
+            throttle = fv.Throttle()
+            html = fv.request(fv.page_url(ship["wiki_page"]), throttle=throttle)[1].decode("utf-8")
             rows = fv.parse(html)
             by_title = {s["wiki"]: s["num"] for s in ship["skins"] if "wiki" in s}
             n = 0
@@ -160,6 +164,19 @@ def main():
                         continue
                     w.writerow([num, r["key"], r["index"], r["oath"], r["zh"], r["jp"]])
                     n += 1
+                # Forms the game treats as ships of their own (小贝法, 小柴郡, ...) have a wiki page
+                # each; its default table is that skin's lines.
+                for s in ship["skins"]:
+                    if not s.get("wiki_page"):
+                        continue
+                    own = fv.parse(fv.request(fv.page_url(s["wiki_page"]), throttle=throttle)[1].decode("utf-8"))
+                    m = 0
+                    for r in own:
+                        if r["title"] == "":
+                            w.writerow([s["num"], r["key"], r["index"], r["oath"], r["zh"], r["jp"]])
+                            m += 1
+                    n += m
+                    print(f"{key:9s} voices   {m} lines for {s['num']} from the page {s['wiki_page']}")
             unknown = sorted({r["title"] for r in rows} - set(by_title))
             print(f"{key:9s} voices   {n} lines" + (f"; unmapped wiki tables: {unknown}" if unknown else ""))
 

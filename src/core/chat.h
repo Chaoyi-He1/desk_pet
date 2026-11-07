@@ -80,10 +80,22 @@ struct Persona {
   void addSkinName(const std::string& skinFileName, const Ini& shipIni);
 };
 
-// System prompt that lets the model study her before answering: who she is, all her official
-// lines grouped by outfit and scene (the current outfit first; post-oath lines only after the
-// oath), what she wears now, and how to answer. The same text every turn, so it caches.
-std::string chatPersonaPrompt(const Persona& p);
+// The study: before the first answer the model reads every official line of the ship (all
+// outfits, post-oath lines marked) and writes one character file for her: personality, way of
+// speaking, relationship with the commander, background, and a line per outfit. The shells
+// keep the result in persona-<ship>.txt next to chat.ini and redo it when the lines change.
+const char* chatStudySystemPrompt();
+std::string chatStudyUserPrompt(const Persona& p);
+// What the study was made from: the ship, the lines and the prompt version (not the outfit).
+std::string personaStudyKey(const Persona& p);
+// The cache file: "# study <key>" then the profile; reading checks the key.
+std::string personaCacheText(const std::string& key, const std::string& profile);
+bool personaCacheRead(const std::string& text, const std::string& key, std::string* profile);
+
+// Chat system prompt: who she is, the studied character file, what she wears now, a few of her
+// lines as a reminder of her voice, and how to answer. Without a profile (study failed or not
+// done) her lines stand in for it, grouped by outfit. The same text every turn, so it caches.
+std::string chatPersonaPrompt(const Persona& p, const std::string& profile = "");
 
 class ChatSession {
 public:

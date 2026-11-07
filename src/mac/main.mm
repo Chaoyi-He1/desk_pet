@@ -233,6 +233,8 @@ struct Ship {
   pet::ChatSession chat_;
   bool chatBusy_;
   std::string chatKey_;  // ship/skin the chat session was set up for
+  std::string pendingChat_;  // what to send once she has studied herself
+  std::string studyFailed_;  // study key that failed this run: answer from her lines instead
   double lastTick_, hiddenSince_;
   pet::Frame last_;
   CGImageRef shownImage_;
@@ -956,13 +958,15 @@ struct Ship {
   [chatPanel_ makeFirstResponder:chatPanel_.field];
 }
 
-- (void)prepareChatSession {
-  std::string key = ships_[ship_].key + "/" + skin_;
-  if (key == chatKey_) return;
-  chatKey_ = key;
+// Her character file, written by the study: next to chat.ini, one per ship.
+- (std::string)personaFile {
+  return userDataDir() + "/persona-" + ships_[ship_].key + ".txt";
+}
+
+// The ship, what she wears and her whole repertoire.
+- (pet::Persona)buildPersona {
   bool oath = false;
   std::string vskin = [self voiceSkinOath:&oath];
-  // Her whole repertoire, so the model can study her before the first answer.
   const Ship& ship = ships_[ship_];
   pet::Persona p;
   p.shipName = ship.name;
@@ -972,7 +976,18 @@ struct Ship {
   for (const std::string& f : ship.skins) p.addSkinName(f, ship.ini);
   p.voices = voices_.empty() ? &fallbackVoices_ : &voices_;
   p.maxReplyChars = [self chatConfig].maxReplyChars;
-  chat_.reset(pet::chatPersonaPrompt(p));
+  return p;
+}
+
+// The chat prompt for the current ship and skin, with her character file when there is one.
+- (void)prepareChatSession {
+  pet::Persona p = [self buildPersona];
+  std::string profile;
+  pet::personaCacheRead(readFile([self personaFile]), pet::personaStudyKey(p), &profile);
+  std::string key = ships_[ship_].key + "/" + skin_ + (profile.empty() ? "" : "+profile");
+  if (key == chatKey_) return;
+  chatKey_ = key;
+  chat_.reset(pet::chatPersonaPrompt(p, profile));
 }
 
 - (void)showBubble:(const std::string&)text {
@@ -988,9 +1003,23 @@ struct Ship {
   if (chatBusy_) return;
   pet::ChatConfig cc = [self chatConfig];
   if (!cc.ready()) return;
-  [self prepareChatSession];
   std::string user = text.UTF8String;
-  std::string body = chat_.requestBody(cc, user);
+  pet::Persona p = [self buildPersona];
+  std::string key = pet::personaStudyKey(p), profile;
+  if (!pet::personaCacheRead(readFile([self personaFile]), key, &profile) && studyFailed_ != key) {
+    // First time with this ship (or her lines changed): she studies herself first, then answers.
+    pet::ChatSession study;
+    study.reset(pet::chatStudySystemPrompt());
+    pendingChat_ = user;
+    [self postChat:cc user:"" body:study.requestBody(cc, pet::chatStudyUserPrompt(p)) study:true];
+    return;
+  }
+  [self prepareChatSession];
+  [self postChat:cc user:user body:chat_.requestBody(cc, user) study:false];
+}
+
+// One request to the model: her answer to `user`, or her character file when `study`.
+- (void)postChat:(pet::ChatConfig)cc user:(std::string)user body:(std::string)body study:(bool)study {
   NSURL* url = [NSURL URLWithString:@(cc.requestUrl().c_str())];
   if (!url) {
     [self showBubble:"聊天设置里的 base_url 不是有效地址"];
@@ -1004,7 +1033,7 @@ struct Ship {
   req.HTTPBody = [NSData dataWithBytes:body.data() length:body.size()];
   chatBusy_ = true;
   chatPanel_.field.enabled = NO;
-  [self showBubble:"……"];
+  [self showBubble:(study ? "（让我先回想一下自己……）" : "……")];
   int maxTurns = cc.maxTurns, maxChars = cc.maxReplyChars;
   [[[NSURLSession sharedSession]
       dataTaskWithRequest:req
@@ -1016,9 +1045,25 @@ struct Ship {
             chatPanel_.field.enabled = YES;
             [chatPanel_ makeFirstResponder:chatPanel_.field];
             std::string reply, why;
+            bool ok = errText.empty() && pet::parseChatReply(json, &reply, &why);
+            if (study) {  // her character file: keep it, then send what the user typed
+              std::string pending = pendingChat_;
+              pendingChat_.clear();
+              std::string k = pet::personaStudyKey([self buildPersona]);
+              if (ok && !pet::clipReply(reply, 1).empty()) {
+                std::ofstream out([self personaFile], std::ios::binary | std::ios::trunc);
+                out << pet::personaCacheText(k, pet::clipReply(reply, 1 << 20));
+                [self sendChat:@(pending.c_str())];
+              } else {
+                studyFailed_ = k;  // this run she answers from her lines; Enter sends the text again
+                chatPanel_.field.stringValue = @(pending.c_str());
+                [self showBubble:"（没能整理出角色档案：" + (errText.empty() ? why : errText) + "）"];
+              }
+              return;
+            }
             if (!errText.empty()) {
               [self showBubble:"（连接失败：" + errText + "）"];
-            } else if (pet::parseChatReply(json, &reply, &why)) {
+            } else if (ok) {
               reply = pet::clipReply(reply, maxChars + 20);
               chat_.accept(user, reply, maxTurns);
               [self showBubble:reply];

@@ -221,58 +221,162 @@ std::string sceneLabel(const std::string& key) {
 
 }  // namespace
 
-std::string chatPersonaPrompt(const Persona& p) {
+namespace {
+
+// Outfits in the order they are listed: `first` (the one she wears) ahead of the known
+// outfits, then any voice table that only the lines mention.
+std::vector<std::string> outfitOrder(const Persona& p, const std::vector<const Line*>& lines, const std::string& first) {
+  std::vector<std::string> order;
+  auto add = [&](const std::string& n) {
+    if (std::find(order.begin(), order.end(), n) == order.end()) order.push_back(n);
+  };
+  if (!first.empty()) add(first);
+  for (const auto& kv : p.skinNames) add(kv.first);
+  for (const Line* l : lines) add(l->skin);
+  return order;
+}
+
+std::string outfitName(const Persona& p, const std::string& num) {
+  for (const auto& kv : p.skinNames)
+    if (kv.first == num) return kv.second;
+  return num;
+}
+
+// Her lines grouped by outfit and scene: the material of the study and, without a profile,
+// of the chat prompt itself. `mark`: the heading of the outfit she wears; `oathMark`:
+// post-oath lines are included and labelled instead of dropped.
+std::string linesByOutfit(const Persona& p, const std::vector<const Line*>& lines, const std::string& first,
+                          const char* mark, bool oathMark) {
+  std::string s;
+  std::string profile;
+  for (const Line* l : lines)
+    if (l->key == "profile") profile += "\n" + l->text;
+  if (!profile.empty()) s += "\n【角色自述】" + profile + "\n";
+  for (const std::string& num : outfitOrder(p, lines, first)) {
+    std::vector<const Line*> mine;
+    for (const Line* l : lines)
+      if (l->skin == num && l->key != "profile") mine.push_back(l);
+    if (mine.empty()) continue;
+    std::stable_sort(mine.begin(), mine.end(),
+                     [](const Line* a, const Line* b) { return sceneRank(a->key) < sceneRank(b->key); });
+    std::string head = num.empty() ? "【台词】" : "【衣装「" + outfitName(p, num) + "」】";
+    if (!num.empty() && num == first && mark) head += mark;
+    s += "\n" + head + "\n";
+    for (const Line* l : mine) {
+      std::string label = sceneLabel(l->key);
+      if (oathMark && l->oath) label += "（誓约后）";
+      s += "- " + (label.empty() ? "" : label + "：") + l->text + "\n";
+    }
+  }
+  return s;
+}
+
+// FNV-1a: enough to tell one set of lines from another.
+std::string fnv1a(const std::string& s) {
+  unsigned long long h = 1469598103934665603ULL;
+  for (unsigned char c : s) {
+    h ^= c;
+    h *= 1099511628211ULL;
+  }
+  char buf[20];
+  std::snprintf(buf, sizeof buf, "%016llx", h);
+  return buf;
+}
+
+const char* kStudyVersion = "study-v1";
+
+}  // namespace
+
+const char* chatStudySystemPrompt() {
+  return "你是熟悉手游《碧蓝航线》的角色设定师，擅长从角色的全部台词中提炼出她完整、统一的性格与说话方式。"
+         "只输出要求的角色档案本身，不加开场白和结语。";
+}
+
+std::string chatStudyUserPrompt(const Persona& p) {
+  std::vector<const Line*> all;
+  if (p.voices)
+    for (const Line& l : p.voices->lines()) all.push_back(&l);
+  std::string s = "下面是《碧蓝航线》舰船少女" + p.shipName +
+                  "在游戏里的全部官方台词，按衣装整理；标「誓约后」的是与指挥官誓约之后才会说的话。\n";
+  s += linesByOutfit(p, all, "", nullptr, true);
+  s += "\n请综合以上全部台词——不是一套衣装一个性格，而是把它们当作同一个人在不同场合、不同衣装下的言行——"
+       "写一份她的角色档案，供之后扮演她的模型使用。用中文、条目式，600字以内，只写档案本身：\n"
+       "1. 性格：核心特质、反差或矛盾之处、情绪的表达方式\n"
+       "2. 说话方式：口癖与语气词、句式与节奏、自称、对指挥官的称呼、常聊的话题和绝不会说的话\n"
+       "3. 与指挥官的关系：态度、亲密程度、誓约前后的变化\n"
+       "4. 身份与背景：阵营、舰种、职务、兴趣爱好、在意的人和事\n"
+       "5. 各套衣装：每套一句，只说穿着它时的情境和状态，性格保持不变\n";
+  return s;
+}
+
+std::string personaStudyKey(const Persona& p) {
+  std::string m = std::string(kStudyVersion) + "\n" + p.shipName + "\n";
+  for (const auto& kv : p.skinNames) m += kv.first + "=" + kv.second + "\n";
+  if (p.voices)
+    for (const Line& l : p.voices->lines()) m += l.skin + "\t" + l.key + "\t" + (l.oath ? "1" : "0") + "\t" + l.text + "\n";
+  return fnv1a(m);
+}
+
+std::string personaCacheText(const std::string& key, const std::string& profile) {
+  return "# study " + key + "\n" + profile + "\n";
+}
+
+bool personaCacheRead(const std::string& text, const std::string& key, std::string* profile) {
+  std::string head = "# study " + key + "\n";
+  if (text.compare(0, head.size(), head) != 0) return false;
+  std::string body = clipReply(text.substr(head.size()), 1 << 20);
+  if (body.empty()) return false;
+  if (profile) *profile = body;
+  return true;
+}
+
+std::string chatPersonaPrompt(const Persona& p, const std::string& profile) {
   std::string s = "你是手游《碧蓝航线》中的舰船少女" + p.shipName + "，正在指挥官的电脑桌面上陪伴他。\n";
   std::vector<const Line*> all;
   if (p.voices)
     for (const Line& l : p.voices->lines())
       if (!l.oath || p.oath) all.push_back(&l);
-  if (!all.empty()) {
-    s += "\n下面是你的角色资料：游戏里你在各套衣装下说过的台词，按衣装和场合整理。请先据此体会你的性格、口癖、"
-         "称呼习惯、与指挥官的关系以及每套衣装的设定，之后的每一句回答都要符合这个形象。\n";
-    std::string profile;
-    for (const Line* l : all)
-      if (l->key == "profile") profile += "\n" + l->text;
-    if (!profile.empty()) s += "\n【角色自述】" + profile + "\n";
-    // Outfits: the one she wears first, then the known outfits in order, then any table left over.
-    std::vector<std::string> order;
-    auto add = [&](const std::string& n) {
-      if (std::find(order.begin(), order.end(), n) == order.end()) order.push_back(n);
-    };
-    if (!p.voiceSkin.empty()) add(p.voiceSkin);
-    for (const auto& kv : p.skinNames) add(kv.first);
-    for (const Line* l : all) add(l->skin);
-    for (const std::string& num : order) {
-      std::vector<const Line*> mine;
-      for (const Line* l : all)
-        if (l->skin == num && l->key != "profile") mine.push_back(l);
-      if (mine.empty()) continue;
-      std::stable_sort(mine.begin(), mine.end(),
-                       [](const Line* a, const Line* b) { return sceneRank(a->key) < sceneRank(b->key); });
-      std::string head = "【台词】";
-      if (!num.empty()) {
-        std::string name = num;
-        for (const auto& kv : p.skinNames)
-          if (kv.first == num) name = kv.second;
-        head = "【衣装「" + name + "」】";
-        if (num == p.voiceSkin) head += "（你现在穿着这套）";
-      }
-      s += "\n" + head + "\n";
-      for (const Line* l : mine) {
-        std::string label = sceneLabel(l->key);
-        s += "- " + (label.empty() ? "" : label + "：") + l->text + "\n";
-      }
-    }
+  std::string desc;  // how the outfit she wears is introduced in the game
+  for (const Line* l : all)
+    if (l->key == "desc" && l->skin == p.voiceSkin && desc.empty()) desc = l->text;
+  if (profile.empty()) {
+    if (!all.empty())
+      s += "\n下面是你的角色资料：游戏里你在各套衣装下说过的台词，按衣装和场合整理。请综合全部台词体会你统一的性格、"
+           "口癖、称呼习惯和与指挥官的关系（衣装只改变场合，不改变性格），之后的每一句回答都要符合这个形象。\n" +
+           linesByOutfit(p, all, p.voiceSkin, "（你现在穿着这套）", false);
+  } else {
+    s += "\n【角色档案】（综合你所有衣装的全部官方台词整理而成）\n" + profile + "\n";
   }
   if (!p.outfit.empty() || p.oath) {
     s += "\n【现在的状态】\n";
     if (!p.outfit.empty()) s += "你现在穿着「" + p.outfit + "」。";
+    if (!desc.empty() && !profile.empty()) s += "这套衣装的介绍：" + desc;
     if (p.oath) s += "你已经和指挥官缔结了誓约。";
     s += "\n";
   }
+  if (!profile.empty() && !all.empty()) {
+    // A few of her lines, the outfit she wears first, so the voice is fresh in mind.
+    static const char* kSampleKeys[] = {"login", "main", "touch", "home", "detail", "headtouch", "touch2"};
+    std::vector<const Line*> picked;
+    std::vector<std::string> order = outfitOrder(p, all, p.voiceSkin);
+    for (const char* key : kSampleKeys)
+      for (const std::string& num : order) {
+        for (const Line* l : all)
+          if (l->skin == num && l->key == key && std::find(picked.begin(), picked.end(), l) == picked.end()) {
+            picked.push_back(l);
+            break;
+          }
+        if (picked.size() >= 16) break;
+      }
+    if (!picked.empty()) {
+      s += "\n【语气参考】（你在游戏里说过的话，用来把握口吻，不要照搬）\n";
+      for (const Line* l : picked) s += "- " + sceneLabel(l->key) + "：" + l->text + "\n";
+    }
+  }
   s += "\n【回答要求】\n始终以" + p.shipName +
-       "的身份、性格和口吻用中文回答，像台词里那样称呼对方（指挥官，或你惯用的称呼）。不要提及自己是AI或语言模型，"
-       "也不要原样背诵上面的台词，而是用同样的语气自然地说新的话。每次回复简短自然，不超过" +
+       (profile.empty() ? std::string("的身份、性格和口吻用中文回答，像台词里那样称呼对方（指挥官，或你惯用的称呼）。")
+                        : std::string("的身份，按角色档案里的性格、说话方式和称呼用中文回答。")) +
+       "不要提及自己是AI或语言模型，也不要原样背诵台词，而是用同样的语气自然地说新的话。每次回复简短自然，不超过" +
        std::to_string(p.maxReplyChars) + "字，不使用列表和表情符号。";
   return s;
 }
