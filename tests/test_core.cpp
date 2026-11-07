@@ -1378,10 +1378,14 @@ TEST(frames_downscale_averages_areas) {
 TEST(frames_downscale_speed_is_reasonable) {
   const int sw = 969, sh = 731, dw = 424, dh = 320;
   std::vector<uint32_t> src((size_t)sw * sh, 0x80402010u), dst((size_t)dw * dh);
-  auto t0 = std::chrono::steady_clock::now();
-  for (int i = 0; i < 5; ++i) downscaleBGRA(src.data(), sw, sh, sw, dst.data(), dw, dh, dw);
-  double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 5;
-  std::printf("  downscale 969x731 -> 424x320: %.2f ms\n", ms);
+  double ms = 1e9;  // best of 5: a busy CI box's scheduling hiccups must not count
+  for (int i = 0; i < 5; ++i) {
+    auto t0 = std::chrono::steady_clock::now();
+    downscaleBGRA(src.data(), sw, sh, sw, dst.data(), dw, dh, dw);
+    double t = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (t < ms) ms = t;
+  }
+  std::printf("  downscale 969x731 -> 424x320: %.2f ms (best of 5)\n", ms);
   CHECK(ms < 40);  // generous: -O0 debug builds of the tests are slow
 }
 
