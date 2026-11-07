@@ -423,6 +423,131 @@ TEST(brain_cross_display_drag_keeps_click_threshold) {
   CHECK(b.tick(0).event == PetEvent::TapBody);
 }
 
+// ---------- several displays ----------
+// The shells hand the brain every display's work area; she stands on the one under her feet.
+
+// Two displays side by side share one ground: she walks from one onto the other and back.
+TEST(brain_floors_walks_onto_the_neighbouring_display) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::Blink].clear();  // walks only
+  Brain b(c, 2);
+  b.setFloors({{0, 0, 800, 600}, {800, 0, 1600, 600}});
+  b.setPosition(100, 0);
+  Frame f = b.tick(0);
+  CHECK_EQ(f.y, 552);
+  bool sawRightDisplay = false, sawLeftAgain = false;
+  for (int i = 0; i < 20000 && !(sawRightDisplay && sawLeftAgain); ++i) {
+    f = b.tick(f.nextTickMs ? f.nextTickMs : 500);
+    CHECK_EQ(f.y, 552);
+    CHECK(f.anim == Anim::Idle || f.anim == Anim::Walk);
+    CHECK(f.x >= 0 && f.x <= 1600 - 32);
+    if (f.x + 16 >= 800) sawRightDisplay = true;
+    else if (sawRightDisplay) sawLeftAgain = true;
+  }
+  CHECK(sawRightDisplay);
+  CHECK(sawLeftAgain);
+}
+
+// A slightly lower neighbour: she walks off the edge, falls and lands on its ground;
+// coming back she just steps up.
+TEST(brain_floors_drops_onto_a_lower_display_and_steps_back_up) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::Blink].clear();
+  Brain b(c, 2);
+  b.setFloors({{0, 0, 800, 600}, {800, 0, 1600, 620}});
+  b.setPosition(100, 0);
+  Frame f = b.tick(0);
+  bool fell = false, landedLow = false, steppedUp = false;
+  for (int i = 0; i < 40000 && !(landedLow && steppedUp); ++i) {
+    Frame p = f;
+    f = b.tick(f.nextTickMs ? f.nextTickMs : 500);
+    CHECK(f.anim != Anim::Drag);
+    if (f.anim == Anim::Fall) { fell = true; CHECK(f.x + 16 >= 800); }
+    if (f.anim == Anim::Land) { landedLow = true; CHECK_EQ(f.y, 572); CHECK(f.x + 16 >= 800); }
+    if (f.x + 16 < 800) {
+      CHECK_EQ(f.y, 552);
+      if (p.y == 572) steppedUp = true;
+    } else if (f.anim != Anim::Fall) {
+      CHECK_EQ(f.y, 572);
+    }
+  }
+  CHECK(fell);
+  CHECK(landedLow);
+  CHECK(steppedUp);
+}
+
+// Displays stacked above or below hers cannot be walked onto.
+TEST(brain_floors_never_walks_onto_a_stacked_display) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::Blink].clear();
+  Brain b(c, 2);
+  b.setFloors({{0, 0, 800, 600}, {0, 600, 800, 1200}, {0, -1200, 800, -600}});
+  b.setPosition(100, 0);
+  Frame f = b.tick(0);
+  for (int i = 0; i < 20000; ++i) {
+    f = b.tick(f.nextTickMs ? f.nextTickMs : 500);
+    CHECK_EQ(f.y, 552);
+    CHECK(f.x >= 0 && f.x <= 768);
+  }
+}
+
+// A neighbour whose ground is much lower or higher than hers is not walkable either way.
+TEST(brain_floors_too_big_a_step_is_not_walkable) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::Blink].clear();
+  Brain b(c, 2);
+  b.setFloors({{0, 0, 800, 600}, {800, 0, 1600, 700}, {-800, 0, 0, 500}});
+  b.setPosition(100, 0);
+  Frame f = b.tick(0);
+  for (int i = 0; i < 20000; ++i) {
+    f = b.tick(f.nextTickMs ? f.nextTickMs : 500);
+    CHECK_EQ(f.y, 552);
+    CHECK(f.x >= 0 && f.x <= 768);
+  }
+}
+
+// Dropped over another display, she falls to that display's ground.
+TEST(brain_floors_drop_lands_on_the_display_under_the_cursor) {
+  BrainConfig c = testCfg();
+  c.constrainDragToWorkArea = false;
+  Brain b(c, 1);
+  b.setFloors({{0, 0, 800, 600}, {800, 0, 1600, 700}, {0, 600, 800, 1200}});
+  b.setPosition(100, 0);
+  b.tick(0);
+  b.press(110, 570);  // grab offset (10, 18)
+  b.move(1210, 300);  // over the right display
+  b.release();
+  Frame f = b.tick(0);
+  CHECK(f.anim == Anim::Fall);
+  for (int i = 0; f.anim == Anim::Fall && i < 200; ++i) f = b.tick(33);
+  CHECK(f.anim == Anim::Land);
+  CHECK_EQ(f.x, 1200);
+  CHECK_EQ(f.y, 652);
+  for (int i = 0; f.anim == Anim::Land && i < 50; ++i) f = b.tick(125);
+  b.press(1210, 670);
+  b.move(410, 900);  // over the display below the first one
+  b.release();
+  f = b.tick(0);
+  CHECK(f.anim == Anim::Fall);
+  for (int i = 0; f.anim == Anim::Fall && i < 200; ++i) f = b.tick(33);
+  CHECK(f.anim == Anim::Land);
+  CHECK_EQ(f.x, 400);
+  CHECK_EQ(f.y, 1152);
+}
+
+// A display that goes away: she moves onto the nearest remaining one.
+TEST(brain_floors_removed_display_moves_her_to_the_nearest) {
+  Brain b(testCfg(), 1);
+  b.setFloors({{0, 0, 800, 600}, {800, 0, 1600, 700}});
+  b.setPosition(1200, 0);
+  Frame f = b.tick(0);
+  CHECK_EQ(f.y, 652);
+  b.setFloors({{0, 0, 800, 600}});
+  f = b.tick(0);
+  CHECK_EQ(f.x, 768);
+  CHECK_EQ(f.y, 552);
+}
+
 TEST(brain_ground_inset_lowers_canvas) {
   BrainConfig c = testCfg();
   c.groundInset = 10;  // feet are 10 px above the canvas bottom

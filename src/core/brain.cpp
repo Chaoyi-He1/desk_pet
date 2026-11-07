@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace pet {
 
@@ -17,6 +18,8 @@ Brain::Brain(const BrainConfig& cfg, unsigned seed) : cfg_(cfg), rng_(seed) {
 }
 
 void Brain::setGround(int workLeft, int workRight, int groundY) {
+  floors_.clear();
+  floor_ = -1;
   workLeft_ = workLeft;
   workRight_ = workRight;
   groundY_ = groundY;
@@ -24,11 +27,80 @@ void Brain::setGround(int workLeft, int workRight, int groundY) {
   if (anim_ != Anim::Drag && anim_ != Anim::Fall) y_ = groundTop();
 }
 
+void Brain::setFloors(const std::vector<Rect>& floors) {
+  floors_ = floors;
+  if (floors_.empty()) return;
+  selectFloor(false);
+  x_ = clampX(x_);
+  if (anim_ != Anim::Drag && anim_ != Anim::Fall) y_ = groundTop();
+}
+
+// The display under her feet becomes her floor. `falling`: the first display at or below
+// the feet (she is being dropped onto it); otherwise the one whose ground is nearest to
+// them (a display stacked under hers is not hers while she walks about). Nothing spanning
+// the feet's x: the nearest display.
+void Brain::selectFloor(bool falling) {
+  if (floors_.empty()) return;
+  int fx = static_cast<int>(std::lround(x_)) + cfg_.spriteW / 2;
+  int fy = static_cast<int>(std::lround(y_)) + cfg_.spriteH - cfg_.groundInset;
+  int best = -1;
+  for (size_t i = 0; i < floors_.size(); ++i) {
+    const Rect& r = floors_[i];
+    if (fx < r.left || fx >= r.right) continue;
+    if (best < 0) { best = static_cast<int>(i); continue; }
+    const Rect& b = floors_[best];
+    bool better;
+    if (falling) {
+      bool rBelow = r.bottom >= fy, bBelow = b.bottom >= fy;
+      better = rBelow != bBelow ? rBelow : rBelow ? r.bottom < b.bottom : r.bottom > b.bottom;
+    } else {
+      better = std::abs(r.bottom - fy) < std::abs(b.bottom - fy);
+    }
+    if (better) best = static_cast<int>(i);
+  }
+  if (best < 0) best = monitorAtPoint(floors_, fx, fy);
+  floor_ = best;
+  const Rect& r = floors_[static_cast<size_t>(best)];
+  workLeft_ = r.left;
+  workRight_ = r.right;
+  workTop_ = r.top;
+  groundY_ = r.bottom;
+}
+
+// The x range she may walk over: her display and, following on, every display beside it
+// (touching or overlapping in x, overlapping in y) whose ground is within half her height
+// of the one before. Displays stacked above or below are left to drags.
+void Brain::walkRange(int* lo, int* hi) const {
+  *lo = workLeft_;
+  *hi = workRight_;
+  if (floors_.empty() || floor_ < 0) return;
+  std::vector<bool> seen(floors_.size(), false);
+  std::vector<int> queue{floor_};
+  seen[static_cast<size_t>(floor_)] = true;
+  while (!queue.empty()) {
+    const Rect a = floors_[static_cast<size_t>(queue.back())];
+    queue.pop_back();
+    *lo = std::min(*lo, a.left);
+    *hi = std::max(*hi, a.right);
+    for (size_t j = 0; j < floors_.size(); ++j) {
+      const Rect& b = floors_[j];
+      bool beside = b.left <= a.right && b.right >= a.left && b.top < a.bottom && b.bottom > a.top;
+      if (seen[j] || !beside || std::abs(b.bottom - a.bottom) > cfg_.spriteH / 2) continue;
+      seen[j] = true;
+      queue.push_back(static_cast<int>(j));
+    }
+  }
+}
+
 void Brain::setWorkTop(int top) { workTop_ = top; }
 
 void Brain::setPosition(int x, int y) {
-  x_ = clampX(x);
-  y_ = clampY(y);
+  x_ = x;
+  y_ = y;
+  selectFloor(false);
+  x_ = clampX(x_);
+  // Standing, she is on the ground: a caller's y only places her among stacked displays.
+  y_ = anim_ == Anim::Drag || anim_ == Anim::Fall ? clampY(y_) : groundTop();
 }
 
 void Brain::setUserIdleSeconds(double s) { sleepy_ = s >= cfg_.sleepAfterSec; }
@@ -70,8 +142,10 @@ void Brain::release() {
   pressed_ = false;
   if (dragging_) {
     dragging_ = false;
-    // The shell may have selected a different monitor while dragging. Only now
-    // constrain the pet to that monitor, then fall to its own floor.
+    // The shell may have selected a different monitor while dragging (or, given every
+    // display, she picks the one under her feet). Only now constrain the pet to that
+    // monitor, then fall to its own floor.
+    selectFloor(true);
     x_ = clampX(x_);
     y_ = clampY(y_);
     if (y_ < groundTop()) {
@@ -127,6 +201,18 @@ Frame Brain::tick(int dtMs) {
             enter(Anim::Idle);
           } else {
             x_ += facingLeft_ ? -step : step;
+          }
+          if (!floors_.empty()) {
+            int was = floor_;
+            selectFloor(false);
+            if (floor_ != was) {
+              if (groundTop() > y_) {  // walked off the edge of a higher display
+                vy_ = 0;
+                enter(Anim::Fall);
+              } else {
+                y_ = groundTop();  // a small step up
+              }
+            }
           }
           break;
         }
@@ -205,7 +291,9 @@ void Brain::scheduleIdleEvent() {
 }
 
 bool Brain::chooseWalkTarget() {
-  int lo = workLeft_, hi = workRight_ - cfg_.spriteW;
+  int lo, hi;
+  walkRange(&lo, &hi);
+  hi -= cfg_.spriteW;
   const int minDist = 40;
   if (hi - lo < minDist) return false;
   std::uniform_int_distribution<int> d(lo, hi);

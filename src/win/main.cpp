@@ -98,7 +98,7 @@ struct App {
   std::string studyFailed;   // study key that failed this run: answer from her lines instead
   int pendingWheel = 0;
   bool hideOnFullscreen = true, mirrorLeft = true, clickThrough = false;
-  int bubbleMs = 3000, chatterMin = 20, savedX = -1;
+  int bubbleMs = 3000, chatterMin = 20, savedX = -1, savedY = 0;
   std::wstring configShip, configSkin;
 
   ULONGLONG lastTick = 0, hiddenSince = 0;
@@ -210,7 +210,7 @@ void writeSettings(const App& app) {
   out << "chatter=" << app.chatterMin << "\n";
   out << "clickthrough=" << (app.clickThrough ? 1 : 0) << "\n";
   out << "yield=" << (app.yieldOn ? 1 : 0) << "\n";
-  if (app.brain) out << "x=" << app.last.x << "\n";
+  if (app.brain) out << "x=" << app.last.x << "\n" << "y=" << app.last.y << "\n";
 }
 
 RECT workArea(HWND hwnd) {
@@ -220,6 +220,25 @@ RECT workArea(HWND hwnd) {
   RECT r;
   SystemParametersInfoW(SPI_GETWORKAREA, 0, &r, 0);
   return r;
+}
+
+// Every display's work area, in virtual-screen pixels: the floors she may stand on.
+std::vector<pet::Rect> displayFloors(HWND hwnd) {
+  std::vector<pet::Rect> out;
+  EnumDisplayMonitors(nullptr, nullptr,
+                      [](HMONITOR m, HDC, LPRECT, LPARAM lp) -> BOOL {
+                        MONITORINFO mi = {sizeof(mi)};
+                        if (GetMonitorInfoW(m, &mi))
+                          reinterpret_cast<std::vector<pet::Rect>*>(lp)->push_back(
+                              {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom});
+                        return TRUE;
+                      },
+                      reinterpret_cast<LPARAM>(&out));
+  if (out.empty()) {
+    RECT w = workArea(hwnd);
+    out.push_back({w.left, w.top, w.right, w.bottom});
+  }
+  return out;
 }
 
 bool isShellWindow(HWND h) {
@@ -235,6 +254,10 @@ bool foregroundIsFullscreen(const App& app) {
   RECT r;
   if (!GetWindowRect(fg, &r)) return false;
   HMONITOR mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+  // A game filling another display leaves her alone on hers.
+  if (app.sprites && mon != MonitorFromPoint({app.last.x + app.sprites->width() / 2, app.last.y + app.sprites->height() / 2},
+                                             MONITOR_DEFAULTTONEAREST))
+    return false;
   MONITORINFO mi = {sizeof(mi)};
   if (!GetMonitorInfoW(mon, &mi)) return false;
   return pet::coversMonitor({r.left, r.top, r.right, r.bottom},
@@ -448,11 +471,7 @@ void step(App& app, int dtMs) {
   }
 }
 
-void updateGround(App& app) {
-  RECT w = workArea(app.hwnd);
-  app.brain->setWorkTop(w.top);
-  app.brain->setGround(w.left, w.right, w.bottom);
-}
+void updateGround(App& app) { app.brain->setFloors(displayFloors(app.hwnd)); }
 
 void updateHidden(App& app) {
   bool hide = app.userHidden || app.fsHidden;
@@ -605,6 +624,7 @@ bool loadSkin(App& app, int ship, const std::wstring& skin, std::wstring* err) {
   app.userHeight = app.userHeightK[kind];
 
   int x = app.brain ? app.last.x : app.savedX;
+  int y = app.brain ? app.last.y : app.savedY;  // tells displays stacked above each other apart
   pet::BrainConfig cfg = app.cfgBase;
   cfg.spriteW = next->width();
   cfg.spriteH = next->height();
@@ -630,11 +650,16 @@ bool loadSkin(App& app, int ship, const std::wstring& skin, std::wstring* err) {
   app.shownId = 0;
   app.cur = petwin::SpriteFrame();
   if (app.hwnd) {
-    RECT work = workArea(app.hwnd);
-    app.brain->setWorkTop(work.top);
-    if (x < work.left || x > work.right - 20) x = work.right - cfg.spriteW - 24;
-    app.brain->setPosition(x, 0);
-    app.brain->setGround(work.left, work.right, work.bottom);
+    std::vector<pet::Rect> floors = displayFloors(app.hwnd);
+    bool onScreen = false;
+    for (const pet::Rect& f : floors) onScreen = onScreen || (x >= f.left && x <= f.right - 20);
+    if (!onScreen) {  // first run, or her display is gone: the right side of this display
+      RECT work = workArea(app.hwnd);
+      x = work.right - cfg.spriteW - 24;
+      y = work.bottom - cfg.spriteH;
+    }
+    app.brain->setFloors(floors);
+    app.brain->setPosition(x, y);
     app.brain->setHidden(app.userHidden || app.fsHidden);
     app.timerMs = -1;
     app.lastTick = GetTickCount64();
@@ -1306,6 +1331,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   app.configShip = widen(ini.get("general", "ship", "belfast"));
   app.configSkin = widen(ini.get("general", "skin", ""));
   app.cfgBase.walkSpeed = ini.getInt("general", "walk_speed", 40);
+  app.cfgBase.constrainDragToWorkArea = false;  // she may be carried to any display; the drop picks her floor
   app.cfgBase.sleepAfterSec = ini.getInt("general", "sleep_after", 180);
   app.cfgBase.idleMinMs = ini.getInt("general", "idle_min_ms", 4000);
   app.cfgBase.idleMaxMs = ini.getInt("general", "idle_max_ms", 12000);
@@ -1325,6 +1351,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   app.clickThrough = saved.getInt("", "clickthrough", 0) != 0;
   app.yieldOn = saved.getInt("", "yield", 1) != 0;
   app.savedX = saved.getInt("", "x", app.savedX);
+  app.savedY = saved.getInt("", "y", app.savedY);
 
   scanShips(app);
   if (app.ships.empty()) {

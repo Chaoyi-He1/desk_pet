@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/anim.h"
+#include "core/screen.h"
 
 namespace pet {
 
@@ -52,6 +53,8 @@ public:
 
   // Horizontal range the pet may occupy and the y coordinate of the ground (work-area bottom).
   void setGround(int workLeft, int workRight, int groundY);
+  // Several displays: every work area; she stands on the one under her feet.
+  void setFloors(const std::vector<Rect>& floors);
   void setWorkTop(int top);
   void setPosition(int x, int y);
   void setUserIdleSeconds(double s);
@@ -73,6 +76,8 @@ private:
   int frames() const;
   void scheduleIdleEvent();
   bool chooseWalkTarget();
+  void selectFloor(bool falling);
+  void walkRange(int* lo, int* hi) const;
   int clampX(double x) const;
   int clampY(double y) const;
   void advanceAnimation(int dtMs);
@@ -87,7 +92,9 @@ private:
   bool facingLeft_ = false;
   double x_ = 0, y_ = 0;
 
-  int workLeft_ = 0, workRight_ = 1920, workTop_ = 0, groundY_ = 1080;
+  int workLeft_ = 0, workRight_ = 1920, workTop_ = 0, groundY_ = 1080;  // her floor
+  std::vector<Rect> floors_;  // every display's work area (empty: setGround's single floor)
+  int floor_ = -1;            // index into floors_
   int idleEventMs_ = 0;
   int targetX_ = 0;
   double vy_ = 0;
