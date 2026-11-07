@@ -364,6 +364,7 @@ struct Ship {
     [self fail:err];
     return;
   }
+  [self prefetchOtherSkins];
   panel_.ignoresMouseEvents = clickThrough_;
   [self startYield];  // before the status menu: it shows whether the permission is missing
   [self createStatusItem];
@@ -475,6 +476,16 @@ struct Ship {
             anchorX:last_.x + sprites_->width() / 2.0
             anchorY:sh - last_.y - sprites_->headTop()
          durationMs:pet::bubbleDurationMs(text, bubbleMs_)];
+}
+
+// Every skin of every ship is made local in the background too (a cloud-synced folder keeps
+// unread files online-only), so a later switch does not wait on the network: her ship first.
+- (void)prefetchOtherSkins {
+  std::vector<std::string> mine, others;
+  for (size_t i = 0; i < ships_.size(); ++i)
+    ((int)i == ship_ ? mine : others).push_back(shipsDir_ + "/" + ships_[i].key + "/skins");
+  petmac::prefetchDirs(std::move(mine), 3);
+  petmac::prefetchDirs(std::move(others), 4);
 }
 
 // Loads skin `skin` of ship `ship` at the current size; the pet keeps its x position.

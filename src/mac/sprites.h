@@ -107,4 +107,13 @@ private:
   std::tuple<int, int, int> currentKey_{-1, -1, -1};
 };
 
+// A cloud-synced folder (Dropbox, iCloud Drive, OneDrive...) can keep files "online-only":
+// macOS holds a dataless placeholder whose content is fetched the first time it is read, a
+// network round trip each. A few reader threads shared by the whole process make such files
+// local in the background: what the main thread wants right now first, then her current skin
+// in the order she needs it, then whatever was queued for later. Nothing waits on them.
+void prefetchWant(const std::string& path);                        // main thread: this one next
+void prefetchFiles(std::vector<std::string> files, int priority);  // 1: her current skin (replaces the previous one's), 2-4: later
+void prefetchDirs(std::vector<std::string> skinsDirs, int priority);  // every skin under each ship's skins folder, listed on a thread
+
 }  // namespace petmac

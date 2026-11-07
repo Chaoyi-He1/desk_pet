@@ -4,13 +4,21 @@
 #import <ImageIO/ImageIO.h>
 #import <IOSurface/IOSurface.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iterator>
-#include <unordered_map>
+#include <mutex>
 #include <sstream>
+#include <thread>
+#include <unordered_map>
 
 #include "core/frames.h"
 #include "core/ini.h"
@@ -55,7 +63,164 @@ std::string readAll(const std::string& p) {
   return ss.str();
 }
 
+#ifndef SF_DATALESS
+#define SF_DATALESS 0x40000000
+#endif
+
+// An "online-only" file in a cloud-synced folder is a dataless placeholder: the first read
+// downloads it. Reading one on the main thread freezes her, so such frames are not decoded
+// until the prefetcher has read them (she keeps the frame she has). stat() does not fetch.
+bool isLocalFile(const std::string& path) {
+  struct stat st;
+  if (stat(path.c_str(), &st) != 0) return true;  // missing or unreadable: let the decoder report it
+  return (st.st_flags & SF_DATALESS) == 0;
+}
+
+// Reads the whole file and drops the data: the sync client fetches it and the file is local.
+void readThrough(const std::string& path) {
+  int fd = open(path.c_str(), O_RDONLY);
+  if (fd < 0) return;
+  std::vector<char> buf(1 << 16);
+  while (read(fd, buf.data(), buf.size()) > 0) {
+  }
+  close(fd);
+}
+
 }  // namespace
+
+// The reader threads behind prefetchWant / prefetchFiles / prefetchDirs, one set for the whole
+// process (they live as long as it does). A placeholder read is mostly waiting on the network,
+// so eight at once finish a skin several times sooner than one after another. Priority 0 is
+// what the main thread asked for (newest first), 1 her current skin in the order she needs it,
+// 2 the meta.ini of every skin (a switch reads it on the main thread), 3 the rest of her ship,
+// 4 the other ships. Same design as the Windows one in win/sprites.cpp.
+class Prefetcher {
+public:
+  static Prefetcher& get() {
+    static Prefetcher p;
+    return p;
+  }
+
+  void want(const std::string& path) {
+    {
+      std::lock_guard<std::mutex> g(lock_);
+      urgent_.erase(std::remove(urgent_.begin(), urgent_.end(), path), urgent_.end());
+      urgent_.push_back(path);
+      startReaders();
+    }
+    wake_.notify_one();
+  }
+
+  void files(std::vector<std::string> paths, int priority) {
+    priority = std::max(1, std::min(priority, kLevels - 1));
+    {
+      std::lock_guard<std::mutex> g(lock_);
+      if (priority == 1) {  // a new current skin: what is left of the previous one can wait
+        std::deque<std::string>& prev = queues_[1];
+        queues_[kRestOfShip].insert(queues_[kRestOfShip].end(), prev.begin(), prev.end());
+        prev.clear();
+      }
+      queues_[priority].insert(queues_[priority].end(), paths.begin(), paths.end());
+      startReaders();
+    }
+    wake_.notify_all();
+  }
+
+  void dirs(std::vector<std::string> skinsDirs, int priority) {
+    bool start;
+    {
+      std::lock_guard<std::mutex> g(lock_);
+      for (auto& d : skinsDirs) dirs_.push_back({d, priority});
+      start = !listing_;
+      listing_ = true;
+    }
+    if (start) std::thread([this] { listMain(); }).detach();
+  }
+
+private:
+  static const int kLevels = 5, kMeta = 2, kRestOfShip = 3, kReaders = 8;
+
+  void startReaders() {  // under lock_
+    if (readers_) return;
+    for (int i = 0; i < kReaders; ++i) {
+      std::thread([this] { readMain(); }).detach();
+      ++readers_;
+    }
+  }
+
+  bool next(std::string* path) {  // under lock_
+    if (!urgent_.empty()) {
+      *path = urgent_.back();
+      urgent_.pop_back();
+      return true;
+    }
+    for (int i = 1; i < kLevels; ++i) {
+      if (queues_[i].empty()) continue;
+      *path = queues_[i].front();
+      queues_[i].pop_front();
+      return true;
+    }
+    return false;
+  }
+
+  void readMain() {
+    for (;;) {
+      std::string path;
+      {
+        std::unique_lock<std::mutex> g(lock_);
+        wake_.wait(g, [&] { return next(&path); });
+      }
+      if (!isLocalFile(path)) readThrough(path);
+    }
+  }
+
+  // A skin folder: its meta.ini, then its frames, idle and walk first.
+  static void listSkin(const std::string& skin, std::vector<std::string>* metas, std::vector<std::string>* frames) {
+    metas->push_back(skin + "/meta.ini");
+    std::vector<std::string> folders = listDir(skin, true, nullptr);
+    auto rank = [](const std::string& f) { return f.rfind("idle", 0) == 0 ? 0 : f.rfind("walk", 0) == 0 ? 1 : 2; };
+    std::stable_sort(folders.begin(), folders.end(), [&](const std::string& a, const std::string& b) { return rank(a) < rank(b); });
+    for (auto& f : folders)
+      for (auto& file : listDir(skin + "/" + f, false, nullptr)) frames->push_back(skin + "/" + f + "/" + file);
+  }
+
+  // Lists the queued skins folders (directory listings do not fetch anything) and hands the
+  // readers every meta.ini first, then each ship's paintings and frames.
+  void listMain() {
+    for (;;) {
+      std::vector<std::pair<std::string, int>> batch;
+      {
+        std::lock_guard<std::mutex> g(lock_);
+        batch.swap(dirs_);
+        if (batch.empty()) listing_ = false;
+      }
+      if (batch.empty()) break;
+      std::vector<std::string> metas;
+      std::vector<std::vector<std::string>> frames(batch.size());
+      @autoreleasepool {
+        for (size_t i = 0; i < batch.size(); ++i) {
+          const std::string& dir = batch[i].first;
+          for (auto& png : listDir(dir, false, "png")) frames[i].push_back(dir + "/" + png);
+          for (auto& sub : listDir(dir, true, nullptr)) listSkin(dir + "/" + sub, &metas, &frames[i]);
+        }
+      }
+      files(std::move(metas), kMeta);
+      for (size_t i = 0; i < batch.size(); ++i) files(std::move(frames[i]), batch[i].second);
+    }
+  }
+
+  std::mutex lock_;
+  std::condition_variable wake_;
+  std::vector<std::string> urgent_;
+  std::deque<std::string> queues_[kLevels];
+  std::vector<std::pair<std::string, int>> dirs_;
+  int readers_ = 0;
+  bool listing_ = false;
+};
+
+void prefetchWant(const std::string& path) { Prefetcher::get().want(path); }
+void prefetchFiles(std::vector<std::string> files, int priority) { Prefetcher::get().files(std::move(files), priority); }
+void prefetchDirs(std::vector<std::string> skinsDirs, int priority) { Prefetcher::get().dirs(std::move(skinsDirs), priority); }
 
 SpriteSet::~SpriteSet() {
   if (base_) CGImageRelease(base_);
@@ -167,6 +332,12 @@ bool SpriteSet::loadAnimated(const std::string& dir, int height, bool exact, std
   groundInset_ = (int)std::lround(meta.getInt("sequence", "ground", 0) * s_);
   headFraction_ = meta.getDouble("sequence", "head_fraction", 0.45);
   fps_ = meta.getInt("sequence", "fps", 10);
+  // Make the frame files local in the background (a cloud-synced folder keeps them online-only
+  // until something reads them): what she shows most of the time first, then the rest.
+  std::vector<std::string> files;
+  for (Anim a : {Anim::Idle, Anim::Walk, Anim::Blink, Anim::React, Anim::Drag, Anim::Fall, Anim::Land, Anim::Sleep})
+    for (auto& list : paths_[(int)a]) files.insert(files.end(), list.begin(), list.end());
+  prefetchFiles(std::move(files), 1);
   return true;
 }
 
@@ -182,6 +353,10 @@ const SpriteSet::Cached* SpriteSet::decode(int a, int v, int i) {
   auto key = std::make_tuple(a, v, i);
   auto it = cache_.find(key);
   if (it != cache_.end()) return &it->second;
+  if (!isLocalFile(paths_[a][v][i])) {  // online-only: fetched in the background; she keeps the frame she has
+    prefetchWant(paths_[a][v][i]);
+    return nullptr;
+  }
   if (isBpf(paths_[a][v][i])) {  // already palette + indices: no pixel work at all
     pet::BpfFrame f;
     if (!readBpf(paths_[a][v][i], &f) || f.width != srcW_ || f.height != srcH_) return nullptr;
@@ -350,6 +525,10 @@ MacFrame SpriteSet::get(Anim a, int variant, int index) {
     // display surface and not kept, so memory only holds the idle and walk loops.
     auto key = std::make_tuple(ai, v, i);
     if (key != currentKey_) {
+      if (!isLocalFile(paths_[ai][v][i])) {  // online-only: fetched in the background; she keeps the frame she has
+        prefetchWant(paths_[ai][v][i]);
+        return f;
+      }
       blitFile(paths_[ai][v][i]);
       currentKey_ = key;
     }
