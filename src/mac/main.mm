@@ -1050,9 +1050,13 @@ struct Ship {
               std::string pending = pendingChat_;
               pendingChat_.clear();
               std::string k = pet::personaStudyKey([self buildPersona]);
+              std::string profile;
               if (ok && !pet::clipReply(reply, 1).empty()) {
-                std::ofstream out([self personaFile], std::ios::binary | std::ios::trunc);
-                out << pet::personaCacheText(k, pet::clipReply(reply, 1 << 20));
+                {  // closed before it is read back below
+                  std::ofstream out([self personaFile], std::ios::binary | std::ios::trunc);
+                  out << pet::personaCacheText(k, pet::clipReply(reply, 1 << 20));
+                }
+                if (!pet::personaCacheRead(readFile([self personaFile]), k, &profile)) studyFailed_ = k;  // never study twice
                 [self sendChat:@(pending.c_str())];
               } else {
                 studyFailed_ = k;  // this run she answers from her lines; Enter sends the text again

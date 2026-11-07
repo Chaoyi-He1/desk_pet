@@ -1206,9 +1206,13 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         std::wstring pending = widen(app->pendingChat);
         app->pendingChat.clear();
         std::string key = pet::personaStudyKey(buildPersona(*app));
+        std::string profile;
         if (res->netError.empty() && pet::parseChatReply(res->body, &reply, &why) && !pet::clipReply(reply, 1).empty()) {
-          std::ofstream out(personaFile(*app).c_str(), std::ios::binary | std::ios::trunc);
-          out << pet::personaCacheText(key, pet::clipReply(reply, 1 << 20));
+          {  // closed before it is read back below
+            std::ofstream out(personaFile(*app).c_str(), std::ios::binary | std::ios::trunc);
+            out << pet::personaCacheText(key, pet::clipReply(reply, 1 << 20));
+          }
+          if (!pet::personaCacheRead(readFile(personaFile(*app)), key, &profile)) app->studyFailed = key;  // never study twice
           sendChat(*app, pending);
         } else {
           app->studyFailed = key;  // this run she answers from her lines; Enter sends the text again
