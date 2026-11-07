@@ -643,6 +643,16 @@ bool loadSkin(App& app, int ship, const std::wstring& skin, std::wstring* err) {
   return true;
 }
 
+// Every skin of every ship is made local in the background too (a cloud-synced folder keeps
+// unread files online-only), so a later switch does not wait on the network: her ship first.
+void prefetchOtherSkins(App& app) {
+  std::vector<std::wstring> mine, others;
+  for (size_t i = 0; i < app.ships.size(); ++i)
+    ((int)i == app.ship ? mine : others).push_back(app.shipsDir + L"\\" + app.ships[i].key + L"\\skins");
+  petwin::prefetchDirs(std::move(mine), 3);
+  petwin::prefetchDirs(std::move(others), 4);
+}
+
 void applyHeight(App& app, int height) {
   RECT work = workArea(app.hwnd);
   int h = pet::clampHeightToScreen(height, work.bottom - work.top);
@@ -1360,6 +1370,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
     MessageBoxW(nullptr, err.c_str(), L"azure_lane_pet", MB_OK | MB_ICONWARNING);
     return 1;
   }
+  prefetchOtherSkins(app);
   applyClickThrough(app);
   addTray(app);
   SetTimer(app.hwnd, ID_WATCH, 2000, nullptr);

@@ -54,7 +54,6 @@ public:
   SpriteFrame get(pet::Anim a, int variant, int index, bool mirrored);
 
 private:
-  class Hydrator;  // background reader that makes "online-only" frame files local (sprites.cpp)
   bool loadPainting(const std::wstring& png, int height, bool exact, std::wstring* err);
   bool loadAnimated(const std::wstring& dir, int height, bool exact, std::wstring* err);
   SpriteFrame decode(const std::wstring& path);
@@ -81,7 +80,14 @@ private:
   std::map<HBITMAP, SpriteFrame> mirrors_;                        // painting mirrors
   std::vector<HBITMAP> owned_;
   ULONG_PTR gdiplus_ = 0;
-  Hydrator* hydrator_ = nullptr;  // animated skins; abandoned (not deleted) by the destructor
 };
+
+// A cloud-synced folder (Dropbox, OneDrive...) keeps files "online-only" until something reads
+// them, a network round trip each. A few reader threads shared by the whole process make such
+// files local in the background: what the UI thread wants right now first, then her current
+// skin in the order she needs it, then whatever was queued for later. Nothing waits on them.
+void prefetchWant(const std::wstring& path);                        // UI thread: this one next
+void prefetchFiles(std::vector<std::wstring> files, int priority);  // 1: her current skin (replaces the previous one's), 2-4: later
+void prefetchDirs(std::vector<std::wstring> skinsDirs, int priority);  // every skin under each ship's skins folder, listed on a thread
 
 }  // namespace petwin

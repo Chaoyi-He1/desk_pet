@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -94,83 +95,147 @@ bool alphaBox(const uint32_t* px, int w, int h, int stride, int* x0, int* y0, in
 
 }  // namespace
 
-// Reads a skin's frame files once on its own thread, in the order she is likely to need them,
-// so online-only placeholders are local before the UI thread asks for them; a frame the UI
-// thread wants right now goes first. The SpriteSet abandons it when it goes away, and the
-// object is freed by whichever of the two (SpriteSet, thread) lets go last.
-class SpriteSet::Hydrator {
+// The reader threads behind prefetchWant / prefetchFiles / prefetchDirs, one set for the whole
+// process (they live as long as it does). A placeholder read is mostly waiting on the network,
+// so eight at once finish a skin several times sooner than one after another. Priority 0 is
+// what the UI thread asked for (newest first), 1 her current skin in the order she needs it,
+// 2 the meta.ini of every skin (a switch reads it on the UI thread), 3 the rest of her ship,
+// 4 the other ships.
+class Prefetcher {
 public:
-  static Hydrator* start(std::vector<std::wstring> files) {
-    Hydrator* h = new Hydrator(std::move(files));
-    HANDLE t = CreateThread(nullptr, 0, &Hydrator::main, h, 0, nullptr);
-    if (!t) {
-      delete h;
-      return nullptr;
+  static Prefetcher& get() {
+    static Prefetcher p;
+    return p;
+  }
+
+  void want(const std::wstring& path) {
+    AcquireSRWLockExclusive(&lock_);
+    urgent_.erase(std::remove(urgent_.begin(), urgent_.end(), path), urgent_.end());
+    urgent_.push_back(path);
+    startReaders();
+    ReleaseSRWLockExclusive(&lock_);
+    WakeConditionVariable(&wake_);
+  }
+
+  void files(std::vector<std::wstring> paths, int priority) {
+    priority = (std::max)(1, (std::min)(priority, kLevels - 1));
+    AcquireSRWLockExclusive(&lock_);
+    if (priority == 1) {  // a new current skin: what is left of the previous one can wait
+      std::deque<std::wstring>& prev = queues_[1];
+      queues_[kRestOfShip].insert(queues_[kRestOfShip].end(), prev.begin(), prev.end());
+      prev.clear();
     }
-    CloseHandle(t);
-    return h;
+    queues_[priority].insert(queues_[priority].end(), paths.begin(), paths.end());
+    startReaders();
+    ReleaseSRWLockExclusive(&lock_);
+    WakeAllConditionVariable(&wake_);
   }
 
-  void want(const std::wstring& path) {  // UI thread: this one next
+  void dirs(std::vector<std::wstring> skinsDirs, int priority) {
     AcquireSRWLockExclusive(&lock_);
-    bool queued = false;
-    for (const std::wstring& p : urgent_)
-      if (p == path) queued = true;
-    if (!queued) urgent_.push_back(path);
+    for (auto& d : skinsDirs) dirs_.push_back({d, priority});
+    bool start = !listing_;
+    listing_ = true;
     ReleaseSRWLockExclusive(&lock_);
-    WakeConditionVariable(&wake_);
-  }
-
-  void abandon() {  // UI thread: the SpriteSet is gone; never touched again by it
-    AcquireSRWLockExclusive(&lock_);
-    quit_ = true;
-    ReleaseSRWLockExclusive(&lock_);
-    WakeConditionVariable(&wake_);
-    release();
+    if (!start) return;
+    HANDLE t = CreateThread(nullptr, 0, &Prefetcher::listMain, this, 0, nullptr);
+    if (t) {
+      CloseHandle(t);
+    } else {
+      AcquireSRWLockExclusive(&lock_);
+      listing_ = false;
+      ReleaseSRWLockExclusive(&lock_);
+    }
   }
 
 private:
-  explicit Hydrator(std::vector<std::wstring> files) : files_(std::move(files)) {}
-  ~Hydrator() = default;
+  static const int kLevels = 5, kMeta = 2, kRestOfShip = 3, kReaders = 8;
 
-  void release() {
-    if (InterlockedDecrement(&refs_) == 0) delete this;
+  void startReaders() {  // under lock_
+    if (readers_) return;
+    for (int i = 0; i < kReaders; ++i) {
+      HANDLE t = CreateThread(nullptr, 0, &Prefetcher::readMain, this, 0, nullptr);
+      if (!t) continue;
+      CloseHandle(t);
+      ++readers_;
+    }
   }
 
-  static DWORD WINAPI main(LPVOID p) {
-    Hydrator* self = static_cast<Hydrator*>(p);
+  bool next(std::wstring* path) {  // under lock_
+    if (!urgent_.empty()) {
+      *path = urgent_.back();
+      urgent_.pop_back();
+      return true;
+    }
+    for (int i = 1; i < kLevels; ++i) {
+      if (queues_[i].empty()) continue;
+      *path = queues_[i].front();
+      queues_[i].pop_front();
+      return true;
+    }
+    return false;
+  }
+
+  static DWORD WINAPI readMain(LPVOID p) {
+    Prefetcher* self = static_cast<Prefetcher*>(p);
     for (;;) {
-      AcquireSRWLockExclusive(&self->lock_);
-      while (!self->quit_ && self->urgent_.empty() && self->next_ >= self->files_.size())
-        SleepConditionVariableSRW(&self->wake_, &self->lock_, INFINITE, 0);
-      if (self->quit_) {
-        ReleaseSRWLockExclusive(&self->lock_);
-        break;
-      }
       std::wstring path;
-      if (!self->urgent_.empty()) {  // the newest request is the frame closest to being shown
-        path = self->urgent_.back();
-        self->urgent_.pop_back();
-      } else {
-        path = self->files_[self->next_++];
-      }
+      AcquireSRWLockExclusive(&self->lock_);
+      while (!self->next(&path)) SleepConditionVariableSRW(&self->wake_, &self->lock_, INFINITE, 0);
       ReleaseSRWLockExclusive(&self->lock_);
       if (!isLocalFile(path)) readThrough(path);
     }
-    self->release();
     return 0;
   }
 
-  volatile LONG refs_ = 2;  // the SpriteSet and the thread
+  // A skin folder: its meta.ini, then its frames, idle and walk first.
+  static void listSkin(const std::wstring& skin, std::vector<std::wstring>* metas, std::vector<std::wstring>* frames) {
+    metas->push_back(skin + L"\\meta.ini");
+    std::vector<std::wstring> folders = listDir(skin, true, L"*");
+    auto rank = [](const std::wstring& f) { return f.compare(0, 4, L"idle") == 0 ? 0 : f.compare(0, 4, L"walk") == 0 ? 1 : 2; };
+    std::stable_sort(folders.begin(), folders.end(), [&](const std::wstring& a, const std::wstring& b) { return rank(a) < rank(b); });
+    for (auto& f : folders)
+      for (auto& file : listDir(skin + L"\\" + f, false, L"*")) frames->push_back(skin + L"\\" + f + L"\\" + file);
+  }
+
+  // Lists the queued skins folders (directory listings are local even for online-only files)
+  // and hands the readers every meta.ini first, then each ship's paintings and frames.
+  static DWORD WINAPI listMain(LPVOID p) {
+    Prefetcher* self = static_cast<Prefetcher*>(p);
+    for (;;) {
+      std::vector<std::pair<std::wstring, int>> batch;
+      AcquireSRWLockExclusive(&self->lock_);
+      batch.swap(self->dirs_);
+      if (batch.empty()) self->listing_ = false;
+      ReleaseSRWLockExclusive(&self->lock_);
+      if (batch.empty()) break;
+      std::vector<std::wstring> metas;
+      std::vector<std::vector<std::wstring>> frames(batch.size());
+      for (size_t i = 0; i < batch.size(); ++i) {
+        const std::wstring& dir = batch[i].first;
+        for (auto& png : listDir(dir, false, L"*.png")) frames[i].push_back(dir + L"\\" + png);
+        for (auto& sub : listDir(dir, true, L"*")) listSkin(dir + L"\\" + sub, &metas, &frames[i]);
+      }
+      self->files(std::move(metas), kMeta);
+      for (size_t i = 0; i < batch.size(); ++i) self->files(std::move(frames[i]), batch[i].second);
+    }
+    return 0;
+  }
+
   SRWLOCK lock_ = SRWLOCK_INIT;
   CONDITION_VARIABLE wake_ = CONDITION_VARIABLE_INIT;
-  std::vector<std::wstring> files_, urgent_;  // files_: in order of need; urgent_: asked for by the UI thread
-  size_t next_ = 0;
-  bool quit_ = false;
+  std::vector<std::wstring> urgent_;
+  std::deque<std::wstring> queues_[kLevels];
+  std::vector<std::pair<std::wstring, int>> dirs_;
+  int readers_ = 0;
+  bool listing_ = false;
 };
 
+void prefetchWant(const std::wstring& path) { Prefetcher::get().want(path); }
+void prefetchFiles(std::vector<std::wstring> files, int priority) { Prefetcher::get().files(std::move(files), priority); }
+void prefetchDirs(std::vector<std::wstring> skinsDirs, int priority) { Prefetcher::get().dirs(std::move(skinsDirs), priority); }
+
 SpriteSet::~SpriteSet() {
-  if (hydrator_) hydrator_->abandon();
   for (auto& kv : cache_) DeleteObject(kv.second.bmp);
   if (transient_.bmp) DeleteObject(transient_.bmp);
   for (HBITMAP b : owned_) DeleteObject(b);
@@ -367,7 +432,7 @@ bool SpriteSet::loadAnimated(const std::wstring& dir, int height, bool exact, st
   std::vector<std::wstring> files;
   for (Anim a : {Anim::Idle, Anim::Walk, Anim::Blink, Anim::React, Anim::Drag, Anim::Fall, Anim::Land, Anim::Sleep})
     for (auto& list : paths_[(int)a]) files.insert(files.end(), list.begin(), list.end());
-  hydrator_ = Hydrator::start(std::move(files));
+  prefetchFiles(std::move(files), 1);
   return true;
 }
 
@@ -393,7 +458,7 @@ SpriteFrame SpriteSet::decode(const std::wstring& path) {
   using namespace Gdiplus;
   SpriteFrame f;
   if (!isLocalFile(path)) {  // online-only: fetched in the background; she keeps the frame she has
-    if (hydrator_) hydrator_->want(path);
+    prefetchWant(path);
     return f;
   }
   bool bpf = path.size() > 4 && _wcsicmp(path.c_str() + path.size() - 4, L".bpf") == 0;
