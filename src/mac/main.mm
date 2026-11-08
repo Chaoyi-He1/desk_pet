@@ -22,6 +22,8 @@
 #include "core/voice.h"
 #include "core/chat.h"
 #include "mac/bubble.h"
+#import "mac/chatbox.h"
+#include "core/avatar.h"
 #include "mac/sprites.h"
 #include "mac/screen.h"
 #include "core/yield.h"
@@ -123,59 +125,7 @@ struct Ship {
 };
 
 // ---------- chat input ----------
-
-// A small key window with one text field; Enter sends, Esc closes.
-@interface ChatPanel : NSPanel <NSTextFieldDelegate>
-@property(nonatomic, strong) NSTextField* field;
-@property(nonatomic, copy) BOOL (^onSend)(NSString*);  // YES when the line went out
-@end
-
-@implementation ChatPanel
-- (instancetype)init {
-  self = [super initWithContentRect:NSMakeRect(0, 0, 372, 34)
-                          styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
-                            backing:NSBackingStoreBuffered
-                              defer:NO];
-  if (self) {
-    self.title = @"和她聊天";
-    self.level = CGWindowLevelForKey(kCGDockWindowLevelKey) + 1;  // the pet's level, so the box is never behind her
-    self.hidesOnDeactivate = NO;
-    self.releasedWhenClosed = NO;
-    self.floatingPanel = YES;
-    self.field = [[NSTextField alloc] initWithFrame:NSMakeRect(6, 6, 300, 22)];
-    self.field.placeholderString = @"说点什么，回车发送";
-    self.field.delegate = self;
-    self.field.target = self;
-    self.field.action = @selector(send:);
-    [self.contentView addSubview:self.field];
-    // Speak instead of typing: the button starts the system's dictation into the field.
-    NSButton* mic = [[NSButton alloc] initWithFrame:NSMakeRect(312, 4, 54, 26)];
-    mic.title = @"语音";
-    mic.bezelStyle = NSBezelStyleRounded;
-    mic.target = self;
-    mic.action = @selector(dictate:);
-    [self.contentView addSubview:mic];
-  }
-  return self;
-}
-- (BOOL)canBecomeKeyWindow { return YES; }
-- (void)dictate:(id)sender {
-  [self makeFirstResponder:self.field];
-  [NSApp sendAction:@selector(startDictation:) to:nil from:self];  // AppKit's Edit ▸ Start Dictation
-}
-- (void)send:(id)sender {
-  NSString* t = [self.field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (t.length == 0 || !self.field.enabled) return;
-  self.field.stringValue = @"";
-  // One line is usually all she gets: the panel goes away with it, until the menu opens it again.
-  if (self.onSend && self.onSend(t)) [self orderOut:nil];
-}
-- (void)cancelOperation:(id)sender { [self orderOut:nil]; }
-- (BOOL)control:(NSControl*)c textView:(NSTextView*)tv doCommandBySelector:(SEL)sel {
-  if (sel == @selector(cancelOperation:)) { [self orderOut:nil]; return YES; }
-  return NO;
-}
-@end
+// ChatPanel and JuusChatPanel: mac/chatbox.h
 
 // ---------- view ----------
 
@@ -226,6 +176,7 @@ struct Ship {
   std::unique_ptr<pet::Brain> brain_;
   std::unique_ptr<petmac::SpriteSet> sprites_;
   std::string assets_, shipsDir_;
+  pet::Ini faces_;  // assets/faces.ini: where the face is in each painting
   std::vector<Ship> ships_;
   int ship_;
   std::string skin_;
@@ -273,6 +224,7 @@ struct Ship {
   rng_.seed((unsigned)time(nullptr));
   assets_ = assetsDir();
   shipsDir_ = assets_ + "/ships";
+  faces_ = pet::Ini::parse(readFile(assets_ + "/faces.ini"));
   ship_ = -1;
   timerMs_ = -1;
   pendingWheel_ = 0;
@@ -963,6 +915,59 @@ struct Ship {
   [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:@(p.c_str())]];
 }
 
+// Her face for the chat box's avatar: her idle frame, cut by pet::faceBox (with the hint from
+// assets/faces.ini when the skin is listed there).
+- (NSImage*)avatarFace {
+  if (!sprites_ || ship_ < 0) return nil;
+  petmac::MacFrame mf = sprites_->get(Anim::Idle, 0, 0);
+  double hint[3];
+  std::string key = ships_[ship_].key + "/" + skin_;
+  bool hinted = sscanf(faces_.get("faces", key, "").c_str(), "%lf,%lf,%lf", &hint[0], &hint[1], &hint[2]) == 3;
+  bool painting = kind_ == 0;
+  CGImageRef img = nullptr;
+  std::vector<uint8_t> px;  // premultiplied BGRA, rows top-down
+  pet::AlphaMask mask;
+  double pxPerPoint = 1;
+  CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+  uint32_t fmt = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little;
+  if (mf.surface) {  // animated: the canvas with the frame drawn in, in pixels
+    IOSurfaceLock(mf.surface, kIOSurfaceLockReadOnly, nullptr);
+    size_t w = IOSurfaceGetWidth(mf.surface), h = IOSurfaceGetHeight(mf.surface), bpr = IOSurfaceGetBytesPerRow(mf.surface);
+    const uint8_t* base = (const uint8_t*)IOSurfaceGetBaseAddress(mf.surface);
+    px.assign(base, base + bpr * h);
+    IOSurfaceUnlock(mf.surface, kIOSurfaceLockReadOnly, nullptr);
+    mask = pet::AlphaMask{(int)w, (int)h, px.data() + 3, bpr, 4};
+    pxPerPoint = sprites_->width() > 0 ? (double)w / sprites_->width() : 1;
+    CGContextRef ctx = CGBitmapContextCreate(px.data(), w, h, 8, bpr, cs, fmt);
+    img = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+  } else if (mf.image) {  // a painting: the picture itself
+    size_t w = CGImageGetWidth(mf.image), h = CGImageGetHeight(mf.image), bpr = w * 4;
+    px.assign(bpr * h, 0);
+    CGContextRef ctx = CGBitmapContextCreate(px.data(), w, h, 8, bpr, cs, fmt);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), mf.image);
+    CGContextRelease(ctx);
+    mask = pet::AlphaMask{(int)w, (int)h, px.data() + 3, bpr, 4};
+    img = CGImageRetain(mf.image);
+  }
+  CGColorSpaceRelease(cs);
+  if (!img) return nil;
+  double headTopY = sprites_->headTop() * pxPerPoint;
+  double groundY = (sprites_->height() - sprites_->groundInset()) * pxPerPoint;
+  pet::FaceBox box = pet::faceBox(mask, painting, headTopY, groundY, hinted ? hint : nullptr);
+  const double D = 84;
+  double f = D / box.side, W = CGImageGetWidth(img), H = CGImageGetHeight(img);
+  NSImage* face = [[NSImage alloc] initWithSize:NSMakeSize(D, D)];
+  [face lockFocus];
+  CGContextRef c = [[NSGraphicsContext currentContext] CGContext];
+  CGContextSetInterpolationQuality(c, kCGInterpolationHigh);
+  // box rows count from the top; Quartz draws from the bottom
+  CGContextDrawImage(c, CGRectMake(-box.x * f, -(H - box.y - box.side) * f, W * f, H * f), img);
+  [face unlockFocus];
+  CGImageRelease(img);
+  return face;
+}
+
 - (void)openChat:(id)s {
   pet::ChatConfig cc = [self chatConfig];
   if (!cc.ready()) {
@@ -970,7 +975,8 @@ struct Ship {
     return;
   }
   if (!chatPanel_) {
-    chatPanel_ = [[ChatPanel alloc] init];
+    chatPanel_ = [[JuusChatPanel alloc] initWithAssets:@(assets_.c_str())];  // the game's JUUS chat look
+    if (!chatPanel_) chatPanel_ = [[ChatPanel alloc] init];               // plain, without the sprites
     __weak PetController* weakSelf = self;
     chatPanel_.onSend = ^BOOL(NSString* text) { return [weakSelf sendChat:text]; };
   }
@@ -981,6 +987,7 @@ struct Ship {
   if (y < NSMinY(work)) y = sh - last_.y - sprites_->headTop() + 60;                // or above the bubble
   x = std::max(NSMinX(work), std::min(x, NSMaxX(work) - chatPanel_.frame.size.width));
   [chatPanel_ setFrameOrigin:NSMakePoint(x, y)];
+  [chatPanel_ setAvatar:[self avatarFace]];
   [NSApp activateIgnoringOtherApps:YES];
   [chatPanel_ makeKeyAndOrderFront:nil];
   [chatPanel_ makeFirstResponder:chatPanel_.field];
@@ -1061,6 +1068,7 @@ struct Ship {
   req.HTTPBody = [NSData dataWithBytes:body.data() length:body.size()];
   chatBusy_ = true;
   chatPanel_.field.enabled = NO;
+  [chatPanel_ setBusy:YES];
   int maxTurns = cc.maxTurns, maxChars = cc.maxReplyChars;
   [[[NSURLSession sharedSession]
       dataTaskWithRequest:req
@@ -1070,6 +1078,7 @@ struct Ship {
           dispatch_async(dispatch_get_main_queue(), ^{
             chatBusy_ = false;
             chatPanel_.field.enabled = YES;
+            [chatPanel_ setBusy:NO];
             [chatPanel_ makeFirstResponder:chatPanel_.field];
             std::string reply, why;
             bool ok = errText.empty() && pet::parseChatReply(json, &reply, &why);

@@ -12,6 +12,14 @@
 namespace petwin {
 namespace {
 
+// The taskbar (and a second display's): the Windows 11 one is XAML and does not answer the
+// MSAA hit test with its buttons, and it is buttons end to end anyway.
+bool isTaskbar(HWND w) {
+  wchar_t cls[64] = {};
+  GetClassNameW(w, cls, 64);
+  return wcscmp(cls, L"Shell_TrayWnd") == 0 || wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0;
+}
+
 bool candidate(HWND w, DWORD me) {
   if (!IsWindowVisible(w)) return false;
   if (GetWindowLongPtrW(w, GWL_EXSTYLE) & WS_EX_TRANSPARENT) return false;
@@ -270,6 +278,13 @@ pet::ProbeResult probeIn(HWND w, POINT pt, double scale) {
   out.window = (int64_t)(intptr_t)w;
   if (!w || isCodeEditor(w)) {  // nothing but the desktop background, or an editor that is never asked
     out.state = pet::CellState::Plain;
+    return out;
+  }
+  if (isTaskbar(w)) {  // she stands on it: every pixel of it is something to click
+    RECT r;
+    GetWindowRect(w, &r);
+    out.state = pet::CellState::Clickable;
+    out.rect = pet::Rect{(int)r.left, (int)r.top, (int)r.right, (int)r.bottom};
     return out;
   }
   POINT local = pt;

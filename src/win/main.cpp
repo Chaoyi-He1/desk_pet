@@ -28,6 +28,8 @@
 #include "core/voice.h"
 #include "core/chat.h"
 #include "win/bubble.h"
+#include "win/chatbox.h"
+#include <cstdio>
 #include "win/resource.h"
 #include "win/sprites.h"
 #include "win/yield_probe.h"
@@ -91,6 +93,9 @@ struct App {
   uint64_t shownId = 0;
   // chat
   HWND chatWnd = nullptr, chatEdit = nullptr;
+  petwin::ChatBox chatBox;  // the JUUS-style box; chatWnd/chatEdit are its windows when chatJuus
+  bool chatJuus = false;
+  pet::Ini faces;  // assets/faces.ini: where the face is in each painting
   pet::ChatSession chat;
   std::string chatKey;
   bool chatBusy = false;
@@ -458,9 +463,23 @@ void setTimerMs(App& app, int ms) {
   else SetTimer(app.hwnd, ID_ANIM, (UINT)ms, nullptr);
 }
 
+// The taskbar is a topmost window too and comes up over her whenever it is activated. She
+// stands on it now, so she goes back on top, and the bubble and the chat box back over her.
+void keepAboveTaskbar(App& app) {
+  if (!IsWindowVisible(app.hwnd)) return;
+  for (HWND w = GetWindow(app.hwnd, GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
+    if (!IsWindowVisible(w) || !isShellWindow(w)) continue;
+    SetWindowPos(app.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    for (HWND over : {app.bubble.hwnd(), app.chatWnd})
+      if (over && IsWindowVisible(over)) SetWindowPos(over, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    return;
+  }
+}
+
 void step(App& app, int dtMs) {
   pet::Frame f = app.brain->tick(dtMs);
   if (f.dirty) applyFrame(app, f);
+  keepAboveTaskbar(app);
   app.last = f;
   setTimerMs(app, f.nextTickMs);
   switch (f.event) {
@@ -845,6 +864,7 @@ bool startChatJob(App& app, const pet::ChatConfig& cc, const std::string& user, 
   CloseHandle(th);
   app.chatBusy = true;
   if (app.chatEdit) EnableWindow(app.chatEdit, FALSE);
+  if (app.chatJuus) app.chatBox.setBusy(true);
   return true;
 }
 
@@ -869,19 +889,25 @@ bool sendChat(App& app, const std::wstring& raw) {
   return startChatJob(app, cc, user, app.chat.requestBody(cc, user), false);
 }
 
+// Sends what is in the box. One line is usually all she gets: the box goes away with it,
+// until the menu opens it again.
+void submitChat(App& app) {
+  if (!app.chatEdit) return;
+  wchar_t buf[1024];
+  GetWindowTextW(app.chatEdit, buf, 1024);
+  SetWindowTextW(app.chatEdit, L"");
+  if (sendChat(app, buf)) ShowWindow(app.chatWnd, SW_HIDE);
+}
+
 WNDPROC g_editProc = nullptr;
 
 LRESULT CALLBACK chatEditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_KEYDOWN && wp == VK_RETURN) {
-    wchar_t buf[1024];
-    GetWindowTextW(h, buf, 1024);
-    SetWindowTextW(h, L"");
-    // One line is usually all she gets: the box goes away with it, until the menu opens it again.
-    if (g_app && sendChat(*g_app, buf)) ShowWindow(GetParent(h), SW_HIDE);
+    if (g_app) submitChat(*g_app);
     return 0;
   }
   if (msg == WM_KEYDOWN && wp == VK_ESCAPE) {
-    ShowWindow(GetParent(h), SW_HIDE);
+    if (g_app) ShowWindow(g_app->chatWnd, SW_HIDE);
     return 0;
   }
   if (msg == WM_CHAR && (wp == VK_RETURN || wp == VK_ESCAPE)) return 0;  // no beep
@@ -919,34 +945,57 @@ LRESULT CALLBACK chatWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   return DefWindowProcW(h, msg, wp, lp);
 }
 
+// assets/faces.ini: the face of the current skin as fractions of its opaque box, if listed.
+bool faceHint(const App& app, double out[3]) {
+  if (app.ship < 0) return false;
+  std::string v = app.faces.get("faces", narrow(app.ships[app.ship].key + L"/" + app.skin), "");
+  return sscanf(v.c_str(), "%lf,%lf,%lf", &out[0], &out[1], &out[2]) == 3;
+}
+
 void openChat(App& app) {
   if (!chatConfig().ready()) {
     openChatSettings();
     return;
   }
   if (!app.chatWnd) {
-    WNDCLASSW wc = {};
-    wc.lpfnWndProc = chatWndProc;
-    wc.hInstance = app.hinst;
-    wc.lpszClassName = L"BelfastPetChat";
-    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-    RegisterClassW(&wc);
-    RECT r = {0, 0, 380, 36};
-    AdjustWindowRectEx(&r, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW | WS_EX_TOPMOST);
-    app.chatWnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, wc.lpszClassName, L"和她聊天", WS_POPUP | WS_CAPTION | WS_SYSMENU,
-                                  0, 0, r.right - r.left, r.bottom - r.top, nullptr, nullptr, app.hinst, nullptr);
-    app.chatEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 6, 6, 310, 24,
-                                   app.chatWnd, nullptr, app.hinst, nullptr);
-    // Speak instead of typing: the button opens Windows' own voice typing into the box.
-    HWND mic = CreateWindowExW(0, L"BUTTON", L"语音", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 322, 6, 52, 24, app.chatWnd,
-                               (HMENU)(INT_PTR)IDC_MIC, app.hinst, nullptr);
+    HWND mic = nullptr;
+    if (app.chatBox.create(app.hinst, app.assetsDir)) {  // the game's JUUS chat look (assets/ui/juus)
+      app.chatJuus = true;
+      app.chatWnd = app.chatBox.hwnd();
+      app.chatEdit = app.chatBox.edit();
+      app.chatBox.onVoice = [&app] { startDictation(app); };
+      app.chatBox.onSend = [&app] { submitChat(app); };
+    } else {  // plain: a small titled window with the box and a 语音 button
+      WNDCLASSW wc = {};
+      wc.lpfnWndProc = chatWndProc;
+      wc.hInstance = app.hinst;
+      wc.lpszClassName = L"BelfastPetChat";
+      wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+      wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+      RegisterClassW(&wc);
+      RECT r = {0, 0, 380, 36};
+      AdjustWindowRectEx(&r, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW | WS_EX_TOPMOST);
+      app.chatWnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, wc.lpszClassName, L"和她聊天", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                                    0, 0, r.right - r.left, r.bottom - r.top, nullptr, nullptr, app.hinst, nullptr);
+      app.chatEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 6, 6, 310, 24,
+                                     app.chatWnd, nullptr, app.hinst, nullptr);
+      // Speak instead of typing: the button opens Windows' own voice typing into the box.
+      mic = CreateWindowExW(0, L"BUTTON", L"语音", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 322, 6, 52, 24, app.chatWnd,
+                            (HMENU)(INT_PTR)IDC_MIC, app.hinst, nullptr);
+    }
     HFONT font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
     SendMessageW(app.chatEdit, WM_SETFONT, (WPARAM)font, TRUE);
-    SendMessageW(mic, WM_SETFONT, (WPARAM)font, TRUE);
+    if (mic) SendMessageW(mic, WM_SETFONT, (WPARAM)font, TRUE);
     SendMessageW(app.chatEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"说点什么，回车发送；Win+H 语音输入");
     g_editProc = (WNDPROC)SetWindowLongPtrW(app.chatEdit, GWLP_WNDPROC, (LONG_PTR)chatEditProc);
+  }
+  if (app.chatJuus && app.sprites) {  // her face on the avatar: the current skin's first idle frame
+    petwin::SpriteFrame face = app.sprites->get(Anim::Idle, 0, 0, false);
+    double hint[3];
+    bool hinted = faceHint(app, hint);
+    app.chatBox.setAvatar(face.bmp, face.offY, app.sprites->height(), app.sprites->headTop(), app.sprites->groundInset(),
+                          app.kind == 0, hinted ? hint : nullptr);
   }
   RECT wr;
   GetWindowRect(app.chatWnd, &wr);
@@ -1261,6 +1310,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       app->chatBusy = false;
       if (app->chatEdit) {
         EnableWindow(app->chatEdit, TRUE);
+        if (app->chatJuus) app->chatBox.setBusy(false);
         if (IsWindowVisible(app->chatWnd)) SetFocus(app->chatEdit);
       }
       pet::ChatConfig cc = chatConfig();
@@ -1323,6 +1373,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   app.shipsDir = app.assetsDir + L"\\ships";
 
   pet::Ini ini = pet::Ini::parse(readFile(app.assetsDir + L"\\config.ini"));
+  app.faces = pet::Ini::parse(readFile(app.assetsDir + L"\\faces.ini"));
   app.configHeight = ini.getInt("general", "height", 320);
   app.height = app.configHeight;
   app.mirrorLeft = ini.getInt("general", "mirror_left", 1) != 0;

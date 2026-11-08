@@ -9,6 +9,8 @@
 #include "core/chat.h"
 #include "core/frames.h"
 #include "core/yield.h"
+#include "core/avatar.h"
+#include <cmath>
 #include <chrono>
 #include <cstring>
 
@@ -151,6 +153,64 @@ TEST(skin_display_name_strips_order_prefix) {
   CHECK(skinDisplayName("04-Serene Steel 礼服.PNG") == "Serene Steel 礼服");
   CHECK(skinDisplayName("belfast.png") == "belfast");
   CHECK(skinDisplayName("11-改造 无舰装 手工抠图.png") == "改造 无舰装 手工抠图");
+}
+
+// ---------- avatar (the chat box's face crop) ----------
+// A premultiplied BGRA buffer whose alpha is set from a 0/1 picture.
+struct AlphaPic {
+  int w, h;
+  std::vector<uint8_t> px;
+  AlphaPic(int w_, int h_) : w(w_), h(h_), px((size_t)w_ * h_ * 4, 0) {}
+  void fillRows(int y0, int y1, int x0, int x1) {
+    for (int y = y0; y < y1; ++y)
+      for (int x = x0; x < x1; ++x) px[((size_t)y * w + x) * 4 + 3] = 255;
+  }
+  AlphaMask mask() const { return AlphaMask{w, h, px.data() + 3, (size_t)w * 4, 4}; }
+};
+
+TEST(avatar_chibi_face_is_a_third_down_the_character) {
+  AlphaPic pic(100, 200);
+  pic.fillRows(0, 200, 0, 100);  // all opaque: the centre of a row is its middle
+  // the character stands from y=10 (head top) to y=190 (ground): 180 tall
+  FaceBox f = faceBox(pic.mask(), false, 10, 190, nullptr);
+  CHECK(std::fabs(f.side - 180 * 0.48) < 0.01);
+  CHECK(std::fabs((f.y + f.side / 2) - (10 + 180 * 0.33)) < 0.01);
+  CHECK(std::fabs((f.x + f.side / 2) - 49.5) < 0.01);
+}
+
+TEST(avatar_chibi_centres_on_the_longest_run_of_the_face_row) {
+  AlphaPic pic(200, 200);
+  pic.fillRows(0, 200, 120, 180);  // the head is at x 120..180
+  pic.fillRows(0, 200, 10, 30);    // a prop to the left: shorter run, ignored
+  FaceBox f = faceBox(pic.mask(), false, 0, 200, nullptr);
+  CHECK(std::fabs((f.x + f.side / 2) - 149.5) < 0.01);
+}
+
+TEST(avatar_painting_bust_starts_below_thin_strands) {
+  AlphaPic pic(200, 200);
+  pic.fillRows(0, 10, 69, 71);     // a 2 px strand above the head
+  pic.fillRows(10, 50, 50, 90);    // the head: 40 wide, centred on 70
+  pic.fillRows(50, 200, 40, 100);  // the body: 60 wide, centred on 70
+  FaceBox f = faceBox(pic.mask(), true, 0, 0, nullptr);
+  CHECK(std::fabs(f.side - 200 * 0.40) < 0.01);  // 40% of the figure
+  CHECK(std::fabs(f.y - 10) < 0.01);              // from the head's top, not the strand's
+  CHECK(std::fabs((f.x + f.side / 2) - 69.5) < 0.6);
+}
+
+TEST(avatar_hint_is_fractions_of_the_opaque_box) {
+  AlphaPic pic(300, 300);
+  pic.fillRows(100, 300, 50, 250);  // the figure: box x 50..250, y 100..300 (200 x 200)
+  double hint[3] = {0.25, 0.5, 0.3};  // centre at a quarter across, half down; side 30% of the height
+  FaceBox f = faceBox(pic.mask(), true, 0, 0, hint);
+  CHECK(std::fabs(f.side - 60) < 0.01);
+  CHECK(std::fabs((f.x + f.side / 2) - 100) < 0.01);
+  CHECK(std::fabs((f.y + f.side / 2) - 200) < 0.01);
+}
+
+TEST(avatar_empty_picture_gives_a_box_anyway) {
+  AlphaPic pic(64, 64);
+  FaceBox f = faceBox(pic.mask(), true, 0, 0, nullptr);
+  CHECK(f.side > 0);
 }
 
 // ---------- brain ----------
