@@ -17,7 +17,7 @@ ChatConfig ChatConfig::parse(const std::string& iniText) {
   c.anthropicApi = api == "anthropic";
   if (c.anthropicApi) {  // what an empty Claude setup needs
     c.baseUrl = "https://api.anthropic.com";
-    c.model = "claude-opus-5-5";
+    c.model = "claude-sonnet-5-5";
     c.reasoningEffort = "low";  // the model always thinks first; keep it short for a chat bubble
   }
   c.baseUrl = ini.get("chat", "base_url", c.baseUrl);
@@ -114,7 +114,7 @@ const char* chatIniTemplate() {
          "api=anthropic\n"
          "base_url=https://api.anthropic.com\n"
          "api_key=\n"
-         "model=claude-opus-5-5     ; 也可以用 claude-sonnet-5-5、claude-haiku-5-5（更便宜、更快）\n"
+         "model=claude-sonnet-5-5   ; 也可以用 claude-opus-5-5（更用心，也更慢、更贵）、claude-haiku-5-5（更便宜、更快）\n"
          "reasoning_effort=low      ; 回答前思考多少：low / medium / high，越高越用心，也越慢、越贵；留空则不发送\n"
          "max_turns=3               ; 保留最近几轮对话作上下文；她只回应你刚说的这句\n"
          "max_reply_chars=80        ; 回复长度上限（字）\n"

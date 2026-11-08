@@ -11,6 +11,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <winhttp.h>
+#include <dwmapi.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -103,6 +104,9 @@ struct App {
   std::string studyFailed;   // study key that failed this run: answer from her lines instead
   int pendingWheel = 0;
   bool hideOnFullscreen = true, mirrorLeft = true, clickThrough = false;
+  bool gameLowPower = true;  // fewer frames and no yield scans while a program runs fullscreen somewhere
+  bool lowPower = false;     // ...and that is the case now
+  pet::FullscreenRefuge refuge;  // keeps her off displays that fullscreen programs fill
   int bubbleMs = 3000, chatterMin = 20, savedX = -1, savedY = 0;
   std::wstring configShip, configSkin;
 
@@ -254,20 +258,62 @@ bool isShellWindow(HWND h) {
   return c == L"Progman" || c == L"WorkerW" || c == L"Shell_TrayWnd" || c == L"Shell_SecondaryTrayWnd";
 }
 
-bool foregroundIsFullscreen(const App& app) {
-  HWND fg = GetForegroundWindow();
-  if (!fg || fg == app.hwnd || fg == app.bubble.hwnd() || IsIconic(fg) || isShellWindow(fg)) return false;
-  RECT r;
-  if (!GetWindowRect(fg, &r)) return false;
-  HMONITOR mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
-  // A game filling another display leaves her alone on hers.
-  if (app.sprites && mon != MonitorFromPoint({app.last.x + app.sprites->width() / 2, app.last.y + app.sprites->height() / 2},
-                                             MONITOR_DEFAULTTONEAREST))
-    return false;
-  MONITORINFO mi = {sizeof(mi)};
-  if (!GetMonitorInfoW(mon, &mi)) return false;
-  return pet::coversMonitor({r.left, r.top, r.right, r.bottom},
-                            {mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right, mi.rcMonitor.bottom});
+// Every display's full rectangle, in virtual-screen pixels.
+std::vector<RECT> monitorRects() {
+  std::vector<RECT> out;
+  EnumDisplayMonitors(nullptr, nullptr,
+                      [](HMONITOR m, HDC, LPRECT, LPARAM lp) -> BOOL {
+                        MONITORINFO mi = {sizeof(mi)};
+                        if (GetMonitorInfoW(m, &mi)) reinterpret_cast<std::vector<RECT>*>(lp)->push_back(mi.rcMonitor);
+                        return TRUE;
+                      },
+                      reinterpret_cast<LPARAM>(&out));
+  if (out.empty()) out.push_back(RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)});
+  return out;
+}
+
+bool isCloaked(HWND w) {
+  DWORD cloaked = 0;
+  return SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked;
+}
+
+// For every display: is a fullscreen program filling it? The topmost ordinary window over the
+// display's centre decides. Our own, cloaked, click-through and tool windows do not count, and a
+// maximized window is a program at work, not a game (its frame fills a taskbar-less display too).
+struct CoverScan {
+  const App* app;
+  const std::vector<RECT>* monitors;
+  std::vector<char> decided, covered;
+};
+std::vector<bool> coveredDisplays(const App& app, const std::vector<RECT>& monitors) {
+  CoverScan s{&app, &monitors, std::vector<char>(monitors.size(), 0), std::vector<char>(monitors.size(), 0)};
+  EnumWindows(
+      [](HWND w, LPARAM lp) -> BOOL {
+        CoverScan& s = *reinterpret_cast<CoverScan*>(lp);
+        if (!IsWindowVisible(w) || IsIconic(w) || w == s.app->hwnd || w == s.app->bubble.hwnd() || w == s.app->chatWnd)
+          return TRUE;
+        LONG ex = GetWindowLongW(w, GWL_EXSTYLE);
+        if ((ex & (WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW)) || isShellWindow(w) || isCloaked(w)) return TRUE;
+        RECT r;
+        if (!GetWindowRect(w, &r) || r.right - r.left < 8 || r.bottom - r.top < 8) return TRUE;
+        bool maximized = (GetWindowLongW(w, GWL_STYLE) & WS_MAXIMIZE) != 0;
+        bool all = true;
+        for (size_t i = 0; i < s.monitors->size(); ++i) {
+          if (s.decided[i]) continue;
+          const RECT& m = (*s.monitors)[i];
+          int cx = (m.left + m.right) / 2, cy = (m.top + m.bottom) / 2;
+          if (cx < r.left || cx >= r.right || cy < r.top || cy >= r.bottom) {
+            all = false;
+            continue;
+          }
+          s.decided[i] = 1;
+          s.covered[i] =
+              !maximized && pet::coversMonitor({r.left, r.top, r.right, r.bottom}, {m.left, m.top, m.right, m.bottom});
+        }
+        return all ? FALSE : TRUE;  // every display decided: stop
+      },
+      reinterpret_cast<LPARAM>(&s));
+  return std::vector<bool>(s.covered.begin(), s.covered.end());
 }
 
 double userIdleSeconds() {
@@ -506,6 +552,39 @@ void updateHidden(App& app) {
     say(app, pet::Scene::Home);
 }
 
+// While a program runs fullscreen somewhere she draws fewer frames and skips the yield scans.
+void setLowPower(App& app, bool on) {
+  if (on == app.lowPower || !app.brain) return;
+  app.lowPower = on;
+  app.brain->setLowPower(on);
+  app.lastTick = GetTickCount64();
+  step(app, 0);  // re-arms the animation timer at the new pace
+}
+
+// Every watch tick: which displays fullscreen programs fill, and what that means for her: a
+// free display to stand on, hiding when there is none, and low power while a game runs.
+void fullscreenWatch(App& app) {
+  if (!app.sprites || !app.brain) return;
+  std::vector<RECT> mons = monitorRects();
+  std::vector<bool> covered = coveredDisplays(app, mons);
+  setLowPower(app, app.gameLowPower && std::find(covered.begin(), covered.end(), true) != covered.end());
+  if (!app.hideOnFullscreen) return;
+  std::vector<pet::Rect> displays;
+  for (const RECT& m : mons) displays.push_back({m.left, m.top, m.right, m.bottom});
+  pet::FullscreenRefuge::Result r =
+      app.refuge.tick(displays, covered, app.last.x, app.last.y, app.sprites->width(), app.sprites->height());
+  bool hide = r.action == pet::FullscreenRefuge::Action::Hide;
+  bool move = r.action == pet::FullscreenRefuge::Action::Move;
+  if (move) app.brain->setPosition(r.x, r.y);  // before she shows again: no frame over the game
+  if (hide != app.fsHidden) {
+    app.fsHidden = hide;
+    updateHidden(app);
+  } else if (move) {
+    app.lastTick = GetTickCount64();
+    step(app, 0);
+  }
+}
+
 void applyClickThrough(App& app) {
   LONG_PTR ex = GetWindowLongPtrW(app.hwnd, GWL_EXSTYLE);
   ex = (app.clickThrough || app.yieldApplied) ? (ex | WS_EX_TRANSPARENT) : (ex & ~WS_EX_TRANSPARENT);
@@ -572,6 +651,7 @@ void yieldWatchWindows(App& app) {
 
 void yieldScan(App& app) {
   if (!yieldActive(app) || !app.cur.bmp) return;
+  if (app.lowPower) return;  // a game is running: no periodic scans, hover checks only
   if (!app.probes.scanning()) {
     std::vector<pet::Cell> cells = pet::footprint(app.curX, app.curY, app.curX + app.cur.w, app.curY + app.cur.h,
                                                   [&](int x, int y) { return opaqueAt(app, x, y); });
@@ -1229,11 +1309,8 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (app->last.visible && app->brain->anim() != Anim::Sleep && userIdleSeconds() < 120)
           say(*app, pet::Scene::Chatter);
       } else if (wp == ID_WATCH) {
-        bool fs = app->hideOnFullscreen && foregroundIsFullscreen(*app);
-        if (fs != app->fsHidden) {
-          app->fsHidden = fs;
-          updateHidden(*app);
-        } else if (!app->userHidden && !app->fsHidden) {
+        fullscreenWatch(*app);
+        if (!app->userHidden && !app->fsHidden) {
           app->brain->setUserIdleSeconds(userIdleSeconds());
           if (app->timerMs <= 0) app->lastTick = GetTickCount64();
           step(*app, 0);
@@ -1279,6 +1356,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       app->pressing = false;
       KillTimer(h, ID_DRAG);
       if (GetCapture() == h) ReleaseCapture();
+      if (app->brain->anim() == Anim::Drag) app->refuge.userMoved();  // she stays where the commander put her
       app->brain->release();
       step(*app, 0);
       return 0;
@@ -1378,6 +1456,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   app.height = app.configHeight;
   app.mirrorLeft = ini.getInt("general", "mirror_left", 1) != 0;
   app.hideOnFullscreen = ini.getInt("general", "hide_on_fullscreen", 1) != 0;
+  app.gameLowPower = ini.getInt("general", "game_low_power", 1) != 0;
   app.bubbleMs = ini.getInt("general", "bubble_ms", 3000);
   app.chatterMin = ini.getInt("general", "chatter_minutes", 20);
   app.savedX = ini.getInt("general", "start_x", -1);
@@ -1445,7 +1524,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
     MessageBoxW(nullptr, L"窗口创建失败。", L"azure_lane_pet", MB_OK | MB_ICONERROR);
     return 1;
   }
-  app.bubble.create(hinst);
+  app.bubble.create(hinst, app.assetsDir);
 
   std::wstring err;
   if (!loadSkin(app, ship, skin, &err) && !loadSkin(app, 0, app.ships[0].skins.front(), &err)) {
@@ -1455,6 +1534,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   prefetchOtherSkins(app);
   applyClickThrough(app);
   addTray(app);
+  fullscreenWatch(app);  // where she may stand right now: no first frame over a game
   SetTimer(app.hwnd, ID_WATCH, 2000, nullptr);
   app.probeThread = petwin::ProbeThread::start(app.hwnd, WM_YIELD_PROBED);
   setHoverTimer(app, 250);

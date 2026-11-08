@@ -922,7 +922,7 @@ TEST(chat_template_is_claude) {
   ChatConfig t = ChatConfig::parse(std::string(chatIniTemplate()) + "api_key=sk-ant-x\n");
   CHECK(t.ready() && t.anthropicApi);
   CHECK(t.endpoint() == "https://api.anthropic.com/v1/messages");
-  CHECK(t.model == "claude-opus-5-5" && t.reasoningEffort == "low");
+  CHECK(t.model == "claude-sonnet-5-5" && t.reasoningEffort == "low");
 }
 
 TEST(chat_modelhub_responses_config) {
@@ -947,7 +947,7 @@ TEST(chat_anthropic_config) {
   ChatConfig c = ChatConfig::parse("[chat]\napi=anthropic\napi_key=sk-ant-x\n");
   CHECK(c.ready() && c.anthropicApi && !c.responsesApi);
   CHECK(c.baseUrl == "https://api.anthropic.com");  // defaults for this API
-  CHECK(c.model == "claude-opus-5-5");
+  CHECK(c.model == "claude-sonnet-5-5");
   CHECK(c.reasoningEffort == "low");
   CHECK(c.endpoint() == "https://api.anthropic.com/v1/messages");
   CHECK(c.requestUrl() == c.endpoint());  // the key never goes into the address
@@ -971,7 +971,7 @@ TEST(chat_anthropic_request_body) {
   s.reset("你是贝尔法斯特");
   s.accept("早", "早安，指挥官", 8);
   std::string b = s.requestBody(c, "红茶");
-  CHECK(b.find("\"model\":\"claude-opus-5-5\"") != std::string::npos);
+  CHECK(b.find("\"model\":\"claude-sonnet-5-5\"") != std::string::npos);
   CHECK(b.find("\"max_tokens\":16000") != std::string::npos);
   CHECK(b.find("\"system\":[{\"type\":\"text\",\"text\":\"你是贝尔法斯特\",\"cache_control\":{\"type\":\"ephemeral\"}}]") !=
         std::string::npos);  // the persona is the cached prefix
@@ -1641,3 +1641,102 @@ TEST(frames_downscale_speed_is_reasonable) {
 }
 
 MINITEST_MAIN
+
+// ---------- fullscreen refuge: which display she lives on while programs fill others ----------
+
+namespace {
+std::vector<pet::Rect> twoDisplays() { return {{0, 0, 1920, 1080}, {1920, 0, 3840, 1080}}; }
+}  // namespace
+
+TEST(refuge_hides_when_the_only_display_is_covered) {
+  pet::FullscreenRefuge r;
+  pet::FullscreenRefuge::Result a = r.tick({{0, 0, 1920, 1080}}, {true}, 100, 936, 96, 144);
+  CHECK(a.action == pet::FullscreenRefuge::Action::Hide);
+  CHECK(!r.away());
+}
+
+TEST(refuge_stays_on_a_free_display) {
+  pet::FullscreenRefuge r;
+  pet::FullscreenRefuge::Result a = r.tick(twoDisplays(), {false, true}, 480, 936, 96, 144);
+  CHECK(a.action == pet::FullscreenRefuge::Action::Stay);
+  CHECK(!r.away());
+}
+
+TEST(refuge_moves_to_the_free_display_keeping_her_relative_spot) {
+  pet::FullscreenRefuge r;
+  // Her centre sits a quarter of the way across display 0: the same quarter of display 1, on its floor.
+  pet::FullscreenRefuge::Result a = r.tick(twoDisplays(), {true, false}, 432, 936, 96, 144);
+  CHECK(a.action == pet::FullscreenRefuge::Action::Move);
+  CHECK(a.x + 48 == 1920 + 480);
+  CHECK(a.y == 1080 - 144);
+  CHECK(r.away());
+}
+
+TEST(refuge_moves_back_home_when_her_display_frees_up) {
+  pet::FullscreenRefuge r;
+  r.tick(twoDisplays(), {true, false}, 432, 936, 96, 144);
+  pet::FullscreenRefuge::Result still = r.tick(twoDisplays(), {true, false}, 2352, 936, 96, 144);  // home still covered
+  CHECK(still.action == pet::FullscreenRefuge::Action::Stay);
+  pet::FullscreenRefuge::Result back = r.tick(twoDisplays(), {false, false}, 2352, 936, 96, 144);
+  CHECK(back.action == pet::FullscreenRefuge::Action::Move);
+  CHECK(back.x == 432 && back.y == 936);
+  CHECK(!r.away());
+}
+
+TEST(refuge_hides_when_every_display_is_covered_then_comes_back_where_it_can) {
+  pet::FullscreenRefuge r;
+  pet::FullscreenRefuge::Result a = r.tick(twoDisplays(), {true, true}, 432, 936, 96, 144);
+  CHECK(a.action == pet::FullscreenRefuge::Action::Hide);
+  pet::FullscreenRefuge::Result b = r.tick(twoDisplays(), {true, false}, 432, 936, 96, 144);  // display 1 freed up first
+  CHECK(b.action == pet::FullscreenRefuge::Action::Move && b.x >= 1920);
+  pet::FullscreenRefuge::Result c = r.tick(twoDisplays(), {false, false}, b.x, b.y, 96, 144);
+  CHECK(c.action == pet::FullscreenRefuge::Action::Move && c.x == 432 && c.y == 936);
+}
+
+TEST(refuge_stays_where_the_user_dragged_her) {
+  pet::FullscreenRefuge r;
+  r.tick(twoDisplays(), {true, false}, 432, 936, 96, 144);
+  r.userMoved();  // dragged somewhere on display 1: that is her place now
+  CHECK(!r.away());
+  pet::FullscreenRefuge::Result a = r.tick(twoDisplays(), {false, false}, 3000, 936, 96, 144);
+  CHECK(a.action == pet::FullscreenRefuge::Action::Stay);
+}
+
+TEST(refuge_picks_the_nearest_free_display) {
+  std::vector<pet::Rect> three = {{0, 0, 1920, 1080}, {1920, 0, 3840, 1080}, {3840, 0, 5760, 1080}};
+  pet::FullscreenRefuge r;
+  pet::FullscreenRefuge::Result a = r.tick(three, {false, true, false}, 2000, 936, 96, 144);  // left part of the middle one
+  CHECK(a.action == pet::FullscreenRefuge::Action::Move && a.x < 1920);
+}
+
+TEST(refuge_move_keeps_her_inside_a_narrow_display) {
+  pet::FullscreenRefuge r;
+  pet::FullscreenRefuge::Result a =
+      r.tick({{0, 0, 1920, 1080}, {1920, 0, 2560, 1080}}, {true, false}, 1800, 936, 200, 144);
+  CHECK(a.action == pet::FullscreenRefuge::Action::Move);
+  CHECK(a.x >= 1920 && a.x + 200 <= 2560);
+}
+
+TEST(brain_low_power_halves_the_frame_rate) {
+  Brain b = makeBrain();
+  CHECK_EQ(b.tick(0).nextTickMs, 500);  // Idle at 2 fps
+  b.setLowPower(true);
+  CHECK_EQ(b.tick(0).nextTickMs, 1000);
+  b.setLowPower(false);
+  CHECK_EQ(b.tick(0).nextTickMs, 500);
+}
+
+TEST(brain_low_power_keeps_at_least_one_frame_per_second) {
+  BrainConfig c = testCfg();
+  c.fps[(int)Anim::Idle] = 1;
+  Brain b = makeBrain(1, c);
+  b.setLowPower(true);
+  CHECK_EQ(b.tick(0).nextTickMs, 1000);
+}
+
+TEST(brain_low_power_advances_frames_at_the_slower_pace) {
+  Brain b = makeBrain();  // Idle: 2 frames at 2 fps, so 1000 ms per frame in low power
+  b.setLowPower(true);
+  CHECK_EQ(b.tick(600).index, 0);
+  CHECK_EQ(b.tick(500).index, 1);
+}

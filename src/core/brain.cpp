@@ -250,7 +250,7 @@ Frame Brain::tick(int dtMs) {
   pendingEvent_ = PetEvent::None;
   if (hidden_) f.nextTickMs = 0;
   else if (anim_ == Anim::Fall) f.nextTickMs = 33;
-  else f.nextTickMs = 1000 / cfg_.fps[(int)anim_];
+  else f.nextTickMs = framePeriodMs();
   f.dirty = !hasLast_ || f.anim != last_.anim || f.variant != last_.variant || f.index != last_.index ||
             f.facingLeft != last_.facingLeft || f.x != last_.x || f.y != last_.y || f.visible != last_.visible;
   last_ = f;
@@ -266,7 +266,7 @@ int Brain::frames() const {
 
 void Brain::advanceAnimation(int dtMs) {
   frameAccMs_ += dtMs;
-  int period = 1000 / cfg_.fps[(int)anim_];
+  int period = framePeriodMs();
   while (frameAccMs_ >= period) {
     frameAccMs_ -= period;
     if (++index_ >= frames()) {
@@ -321,6 +321,12 @@ int Brain::clampX(double x) const {
 int Brain::clampY(double y) const {
   int hi = std::max(workTop_, groundTop());
   return static_cast<int>(std::lround(std::min<double>(std::max<double>(y, workTop_ - cfg_.spriteH / 3), hi)));
+}
+
+int Brain::framePeriodMs() const {
+  int fps = cfg_.fps[(int)anim_];
+  if (lowPower_) fps = std::max(1, fps / 2);
+  return 1000 / fps;
 }
 
 }  // namespace pet

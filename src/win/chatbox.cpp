@@ -1,11 +1,9 @@
 #include "win/chatbox.h"
 
-#include <objidl.h>
-#include <gdiplus.h>
-
 #include <algorithm>
 
 #include "core/avatar.h"
+#include "win/gdiplus_draw.h"
 
 namespace petwin {
 namespace {
@@ -23,36 +21,6 @@ const Gdiplus::Color kGrey(255, 190, 194, 204);
 const Gdiplus::Color kInk(255, 70, 80, 100);
 
 bool inRect(const RECT& r, POINT p) { return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom; }
-
-Gdiplus::Bitmap* loadPng(const std::wstring& path) {
-  Gdiplus::Bitmap* b = new Gdiplus::Bitmap(path.c_str());
-  if (b->GetLastStatus() != Gdiplus::Ok || b->GetWidth() == 0) {
-    delete b;
-    return nullptr;
-  }
-  return b;
-}
-
-// Draws `src` stretched into `dst` keeping its corners: capX / capY pixels of the source
-// edges are copied as they are, the rest is stretched.
-void drawNine(Gdiplus::Graphics& g, Gdiplus::Bitmap& src, const RECT& dst, int capX, int capY) {
-  using namespace Gdiplus;
-  ImageAttributes ia;
-  ia.SetWrapMode(WrapModeTileFlipXY);  // no seams where the slices meet
-  int sw = (int)src.GetWidth(), sh = (int)src.GetHeight();
-  int dw = dst.right - dst.left, dh = dst.bottom - dst.top;
-  capX = (std::min)(capX, (std::min)(sw / 2, dw / 2));
-  capY = (std::min)(capY, (std::min)(sh / 2, dh / 2));
-  int sx[4] = {0, capX, sw - capX, sw}, sy[4] = {0, capY, sh - capY, sh};
-  int dx[4] = {dst.left, dst.left + capX, dst.right - capX, dst.right};
-  int dy[4] = {dst.top, dst.top + capY, dst.bottom - capY, dst.bottom};
-  for (int j = 0; j < 3; ++j)
-    for (int i = 0; i < 3; ++i) {
-      int w = dx[i + 1] - dx[i], h = dy[j + 1] - dy[j];
-      if (w <= 0 || h <= 0) continue;
-      g.DrawImage(&src, Rect(dx[i], dy[j], w, h), sx[i], sy[j], sx[i + 1] - sx[i], sy[j + 1] - sy[j], UnitPixel, &ia);
-    }
-}
 
 // Draws `src` with every pixel's colour replaced by `tint`, keeping its alpha.
 void drawTinted(Gdiplus::Graphics& g, Gdiplus::Bitmap& src, const RECT& dst, Gdiplus::Color tint) {

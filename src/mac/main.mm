@@ -87,31 +87,51 @@ static CGFloat screenH() { return NSScreen.screens.firstObject.frame.size.height
 
 static int64_t nowMs() { return (int64_t)(CACurrentMediaTime() * 1000.0); }
 
-static bool foregroundIsFullscreen() {
-  NSRunningApplication* front = NSWorkspace.sharedWorkspace.frontmostApplication;
-  if (!front || front.processIdentifier == getpid()) return false;
+// The active displays and their bounds in global display coordinates (y down from the main
+// display's top: the brain's coordinates).
+static std::vector<CGDirectDisplayID> activeDisplays(std::vector<pet::Rect>* bounds) {
+  CGDirectDisplayID ids[8];
+  uint32_t n = 0;
+  CGGetActiveDisplayList(8, ids, &n);
+  for (uint32_t d = 0; d < n; ++d) {
+    CGRect m = CGDisplayBounds(ids[d]);
+    bounds->push_back({(int)m.origin.x, (int)m.origin.y, (int)(m.origin.x + m.size.width), (int)(m.origin.y + m.size.height)});
+  }
+  return std::vector<CGDirectDisplayID>(ids, ids + n);
+}
+
+// For every display: is a fullscreen program filling it? The frontmost ordinary window over the
+// display's centre decides; our own windows and the menu bar / Dock layers do not count.
+static std::vector<bool> coveredDisplays(const std::vector<pet::Rect>& displays) {
+  std::vector<bool> covered(displays.size(), false), decided(displays.size(), false);
   CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
                                                kCGNullWindowID);
-  if (!list) return false;
-  bool fs = false;
-  CGDirectDisplayID displays[8];
-  uint32_t n = 0;
-  CGGetActiveDisplayList(8, displays, &n);
-  for (CFIndex i = 0; i < CFArrayGetCount(list) && !fs; ++i) {
+  if (!list) return covered;
+  for (CFIndex i = 0; i < CFArrayGetCount(list); ++i) {  // front to back
     NSDictionary* w = (__bridge NSDictionary*)CFArrayGetValueAtIndex(list, i);
-    if ([w[(id)kCGWindowOwnerPID] intValue] != front.processIdentifier) continue;
+    if ([w[(id)kCGWindowOwnerPID] intValue] == getpid()) continue;
     if ([w[(id)kCGWindowLayer] intValue] != 0) continue;
+    if (w[(id)kCGWindowAlpha] && [w[(id)kCGWindowAlpha] doubleValue] < 0.05) continue;
     CGRect b;
     if (!CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)w[(id)kCGWindowBounds], &b)) continue;
+    if (b.size.width < 8 || b.size.height < 8) continue;
     pet::Rect wr{(int)b.origin.x, (int)b.origin.y, (int)(b.origin.x + b.size.width), (int)(b.origin.y + b.size.height)};
-    for (uint32_t d = 0; d < n; ++d) {
-      CGRect m = CGDisplayBounds(displays[d]);
-      pet::Rect mr{(int)m.origin.x, (int)m.origin.y, (int)(m.origin.x + m.size.width), (int)(m.origin.y + m.size.height)};
-      if (pet::coversMonitor(wr, mr)) { fs = true; break; }
+    bool all = true;
+    for (size_t d = 0; d < displays.size(); ++d) {
+      if (decided[d]) continue;
+      const pet::Rect& m = displays[d];
+      int cx = (m.left + m.right) / 2, cy = (m.top + m.bottom) / 2;
+      if (cx < wr.left || cx >= wr.right || cy < wr.top || cy >= wr.bottom) {
+        all = false;
+        continue;
+      }
+      decided[d] = true;
+      covered[d] = pet::coversMonitor(wr, m);
     }
+    if (all) break;  // every display decided
   }
   CFRelease(list);
-  return fs;
+  return covered;
 }
 
 static double userIdleSeconds() {
@@ -186,6 +206,8 @@ struct Ship {
   int height_, configHeight_, bubbleMs_, chatterMin_, savedX_, pendingWheel_, timerMs_;
   CGDirectDisplayID displayID_;
   bool userHeight_, mirrorLeft_, hideOnFullscreen_, userHidden_, fsHidden_, clickThrough_;
+  bool gameLowPower_, lowPower_;  // fewer frames and no yield scans while a program runs fullscreen somewhere
+  pet::FullscreenRefuge refuge_;  // keeps her off displays that fullscreen programs fill
   // Paintings (static, dynamic, Live2D) and chibis keep separate sizes: [0] painting, [1] chibi.
   int heightK_[2];
   bool userHeightK_[2];
@@ -239,6 +261,8 @@ struct Ship {
   userHeight_ = false;
   mirrorLeft_ = ini.getInt("general", "mirror_left", 1) != 0;
   hideOnFullscreen_ = ini.getInt("general", "hide_on_fullscreen", 1) != 0;
+  gameLowPower_ = ini.getInt("general", "game_low_power", 1) != 0;
+  lowPower_ = false;
   bubbleMs_ = ini.getInt("general", "bubble_ms", 3000);
   chatterMin_ = ini.getInt("general", "chatter_minutes", 20);
   savedX_ = ini.getInt("general", "start_x", -1);
@@ -311,7 +335,7 @@ struct Ship {
   }
   lastDay_ = [self today];
 
-  bubble_ = [[PetBubble alloc] init];
+  bubble_ = [[PetBubble alloc] initWithAssets:@(assets_.c_str())];
   [self createWindow];
   std::string err;
   if (![self loadShip:ship skin:wantSkin error:&err] && ![self loadShip:0 skin:ships_[0].skins.front() error:&err]) {
@@ -323,6 +347,7 @@ struct Ship {
   [self startYield];  // before the status menu: it shows whether the permission is missing
   [self createStatusItem];
   watchTimer_ = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(watch) userInfo:nil repeats:YES];
+  [self fullscreenWatch];  // where she may stand right now: no first frame over a game
   watchTimer_.tolerance = 0.5;
   [self applyChatterTimer];
   [[NSNotificationCenter defaultCenter] addObserver:self
@@ -671,12 +696,46 @@ struct Ship {
   [self step:std::max(0, std::min(dt, 1000))];
 }
 
-- (void)watch {
-  bool fs = hideOnFullscreen_ && foregroundIsFullscreen();
-  if (fs != fsHidden_) {
-    fsHidden_ = fs;
+// While a program runs fullscreen somewhere she draws fewer frames and skips the yield scans.
+- (void)setLowPower:(bool)on {
+  if (on == lowPower_ || !brain_) return;
+  lowPower_ = on;
+  brain_->setLowPower(on);
+  lastTick_ = CACurrentMediaTime();
+  [self step:0];  // re-arms the animation timer at the new pace
+}
+
+// Every watch tick: which displays fullscreen programs fill, and what that means for her: a
+// free display to stand on, hiding when there is none, and low power while a game runs.
+- (void)fullscreenWatch {
+  if (!sprites_ || !brain_) return;
+  std::vector<pet::Rect> displays;
+  std::vector<CGDirectDisplayID> ids = activeDisplays(&displays);
+  std::vector<bool> covered = coveredDisplays(displays);
+  [self setLowPower:gameLowPower_ && std::find(covered.begin(), covered.end(), true) != covered.end()];
+  if (!hideOnFullscreen_) return;
+  pet::FullscreenRefuge::Result r =
+      refuge_.tick(displays, covered, last_.x, last_.y, sprites_->width(), sprites_->height());
+  bool hide = r.action == pet::FullscreenRefuge::Action::Hide;
+  bool move = r.action == pet::FullscreenRefuge::Action::Move;
+  if (move) {  // before she shows again: no frame over the game
+    int d = pet::monitorAtPoint(displays, r.x + sprites_->width() / 2, r.y + sprites_->height() / 2);
+    if (d >= 0) displayID_ = ids[d];
+    [self updateGround];
+    brain_->setPosition(r.x, brain_->groundTop());
+  }
+  if (hide != fsHidden_) {
+    fsHidden_ = hide;
     [self updateHidden];
-  } else if (!userHidden_ && !fsHidden_) {
+  } else if (move) {
+    lastTick_ = CACurrentMediaTime();
+    [self step:0];
+  }
+}
+
+- (void)watch {
+  [self fullscreenWatch];
+  if (!userHidden_ && !fsHidden_) {
     brain_->setUserIdleSeconds(userIdleSeconds());
     if (timerMs_ <= 0) lastTick_ = CACurrentMediaTime();
     [self step:0];
@@ -1222,6 +1281,7 @@ struct Ship {
 
 - (void)yieldScan {
   if (![self yieldActive] || probes_.scanning()) return;
+  if (lowPower_) return;  // a game is running: no periodic scans, hover checks only
   NSRect f = panel_.frame;
   CGFloat sh = screenH();
   std::vector<pet::Cell> cells =
@@ -1358,6 +1418,7 @@ static void brainPoint(NSEvent* e, int* x, int* y) {
   pressing_ = false;
   bool moved = brain_->anim() == Anim::Drag;
   if (moved) {
+    refuge_.userMoved();  // she stays where the commander put her
     NSScreen* screen = petmac::screenAtPoint(eventScreenPoint(e));
     if (screen) displayID_ = petmac::displayID(screen);
     [self updateGround];

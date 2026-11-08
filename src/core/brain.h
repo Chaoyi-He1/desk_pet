@@ -61,6 +61,8 @@ public:
   void setPosition(int x, int y);
   void setUserIdleSeconds(double s);
   void setHidden(bool hidden);
+  // Half the frame rate while a game runs on another display: she keeps moving, cheaper.
+  void setLowPower(bool on) { lowPower_ = on; }
 
   // Left mouse button, screen coordinates.
   void press(int mx, int my);
@@ -76,6 +78,7 @@ private:
   void enter(Anim a, int variant = -1);
   bool available(Anim a) const { return !cfg_.variants[(int)a].empty(); }
   int frames() const;
+  int framePeriodMs() const;  // ms per animation frame; twice as long in low power
   void scheduleIdleEvent();
   bool chooseWalkTarget();
   void selectFloor(bool falling);
@@ -101,6 +104,7 @@ private:
   int targetX_ = 0;
   double vy_ = 0;
   bool hidden_ = false;
+  bool lowPower_ = false;
   bool sleepy_ = false;
 
   bool pressed_ = false, dragging_ = false;
