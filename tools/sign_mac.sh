@@ -4,6 +4,9 @@
 # (copies sent to other people).
 set -euo pipefail
 APP="$1"
+# Dropbox tags files inside its folder (e.g. com.apple.FinderInfo on the bundle), and codesign
+# rejects those as "detritus". Clear them first; protected ones like com.apple.macl just stay.
+xattr -cr "$APP" 2>/dev/null || true
 KC="$HOME/Library/Keychains/azure_lane_pet-signing.keychain-db"
 PWF="$HOME/Library/Application Support/azure_lane_pet-signing/password"
 if [ "${2:-}" != adhoc ] && [ -f "$KC" ] && [ -f "$PWF" ]; then
