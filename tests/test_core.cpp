@@ -10,6 +10,7 @@
 #include "core/frames.h"
 #include "core/yield.h"
 #include "core/avatar.h"
+#include "core/clicks.h"
 #include <cmath>
 #include <chrono>
 #include <cstring>
@@ -1792,4 +1793,45 @@ TEST(brain_low_power_advances_frames_at_the_slower_pace) {
   b.setLowPower(true);
   CHECK_EQ(b.tick(600).index, 0);
   CHECK_EQ(b.tick(500).index, 1);
+}
+
+// ---------- ClickCounter (three quick clicks open the chat) ----------
+TEST(clicks_three_quick_clicks_in_one_spot_count_up_to_three) {
+  ClickCounter c(500, 8);
+  CHECK_EQ(c.click(100, 100, 1000), 1);
+  CHECK_EQ(c.click(103, 100, 1300), 2);
+  CHECK_EQ(c.click(100, 104, 1600), 3);
+}
+
+TEST(clicks_a_gap_longer_than_the_interval_starts_a_new_count) {
+  ClickCounter c(500, 8);
+  c.click(100, 100, 1000);
+  CHECK_EQ(c.click(100, 100, 1500), 2);  // exactly the interval still counts
+  CHECK_EQ(c.click(100, 100, 2001), 1);  // 501 ms after the previous click
+  CHECK_EQ(c.click(100, 100, 2200), 2);
+}
+
+TEST(clicks_far_from_the_previous_one_start_a_new_count) {
+  ClickCounter c(500, 8);
+  c.click(100, 100, 1000);
+  CHECK_EQ(c.click(120, 100, 1200), 1);  // 20 px to the right
+  CHECK_EQ(c.click(120, 130, 1400), 1);  // 30 px down
+  CHECK_EQ(c.click(120, 130, 1600), 2);
+}
+
+TEST(clicks_reset_by_a_drag_starts_a_new_count) {
+  ClickCounter c(500, 8);
+  c.click(100, 100, 1000);
+  c.click(100, 100, 1200);
+  c.reset();
+  CHECK_EQ(c.click(100, 100, 1400), 1);
+}
+
+TEST(clicks_the_click_after_a_third_starts_a_new_count) {
+  ClickCounter c(500, 8);
+  c.click(100, 100, 1000);
+  c.click(100, 100, 1200);
+  CHECK_EQ(c.click(100, 100, 1400), 3);
+  CHECK_EQ(c.click(100, 100, 1600), 1);
+  CHECK_EQ(c.click(100, 100, 1800), 2);
 }

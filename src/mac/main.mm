@@ -28,6 +28,7 @@
 #include "mac/screen.h"
 #include "core/yield.h"
 #include "mac/yield_probe.h"
+#include "core/clicks.h"
 
 using pet::Anim;
 
@@ -227,6 +228,8 @@ struct Ship {
   bool shownMirror_;
   // yield to controls behind her (docs/superpowers/specs/2026-09-30-yield-to-controls-design.md)
   bool yieldOn_, yieldApplied_, axTrusted_, pressing_;
+  pet::ClickCounter clicks_;  // three quick clicks on her open the chat
+  bool muteTap_;              // the click being handled opens the chat: no touch line for it
   pet::CellCache yieldCache_;
   pet::ControlRects controlRects_;
   pet::ProbeQueue probes_;
@@ -293,6 +296,8 @@ struct Ship {
   clickThrough_ = saved.getInt("", "clickthrough", 0) != 0;
   yieldOn_ = saved.getInt("", "yield", 1) != 0;
   yieldApplied_ = pressing_ = axTrusted_ = false;
+  clicks_ = pet::ClickCounter((int)(NSEvent.doubleClickInterval * 1000.0 + 0.5));
+  muteTap_ = false;
   windowsSig_ = 0;
   yieldGen_ = 0;
   hoverInterval_ = 0;
@@ -680,7 +685,9 @@ struct Ship {
   if (f.dirty) [self applyFrame:f];
   last_ = f;
   [self setTimerMs:f.nextTickMs];
-  switch (f.event) {
+  pet::PetEvent event = f.event;
+  if (muteTap_ && event != pet::PetEvent::Woke) event = pet::PetEvent::None;  // that click opens the chat
+  switch (event) {
     case pet::PetEvent::TapBody: [self say:pet::Scene::TapBody]; break;
     case pet::PetEvent::TapHead: [self say:pet::Scene::TapHead]; break;
     case pet::PetEvent::TapSpecial: [self say:pet::Scene::TapSpecial]; break;
@@ -1424,7 +1431,19 @@ static void brainPoint(NSEvent* e, int* x, int* y) {
     [self updateGround];
   }
   brain_->release();
+  // Three quick clicks on her open the chat; the third says no touch line.
+  bool chat = false;
+  if (moved) {
+    clicks_.reset();
+  } else {
+    int x, y;
+    brainPoint(e, &x, &y);
+    chat = clicks_.click(x, y, nowMs()) == 3;
+  }
+  muteTap_ = chat;
   [self step:0];
+  muteTap_ = false;
+  if (chat) [self openChat:nil];
   if (moved) [self writeSettings];
 }
 

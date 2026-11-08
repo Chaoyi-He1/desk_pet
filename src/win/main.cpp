@@ -35,6 +35,7 @@
 #include "win/sprites.h"
 #include "win/yield_probe.h"
 #include "core/yield.h"
+#include "core/clicks.h"
 
 namespace {
 
@@ -109,6 +110,8 @@ struct App {
   pet::FullscreenRefuge refuge;  // keeps her off displays that fullscreen programs fill
   std::vector<bool> covered;     // which displays they fill now: she gets the others as floors (empty: all)
   int bubbleMs = 3000, chatterMin = 20, savedX = -1, savedY = 0;
+  pet::ClickCounter clicks;  // three quick clicks on her open the chat
+  bool muteTap = false;      // the click being handled opens the chat: no touch line for it
   std::wstring configShip, configSkin;
 
   ULONGLONG lastTick = 0, hiddenSince = 0;
@@ -529,7 +532,9 @@ void step(App& app, int dtMs) {
   keepAboveTaskbar(app);
   app.last = f;
   setTimerMs(app, f.nextTickMs);
-  switch (f.event) {
+  pet::PetEvent event = f.event;
+  if (app.muteTap && event != pet::PetEvent::Woke) event = pet::PetEvent::None;  // that click opens the chat
+  switch (event) {
     case pet::PetEvent::TapBody: say(app, pet::Scene::TapBody); break;
     case pet::PetEvent::TapHead: say(app, pet::Scene::TapHead); break;
     case pet::PetEvent::TapSpecial: say(app, pet::Scene::TapSpecial); break;
@@ -1362,14 +1367,28 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       SetTimer(h, ID_DRAG, 16, nullptr);
       return 0;
     }
-    case WM_LBUTTONUP:
+    case WM_LBUTTONUP: {
       app->pressing = false;
       KillTimer(h, ID_DRAG);
       if (GetCapture() == h) ReleaseCapture();
-      if (app->brain->anim() == Anim::Drag) app->refuge.userMoved();  // she stays where the commander put her
+      bool moved = app->brain->anim() == Anim::Drag;
+      if (moved) app->refuge.userMoved();  // she stays where the commander put her
       app->brain->release();
+      // Three quick clicks on her open the chat; the third says no touch line.
+      bool chat = false;
+      if (moved) {
+        app->clicks.reset();
+      } else {
+        POINT p;
+        GetCursorPos(&p);
+        chat = app->clicks.click(p.x, p.y, (int64_t)GetTickCount64()) == 3;
+      }
+      app->muteTap = chat;
       step(*app, 0);
+      app->muteTap = false;
+      if (chat) openChat(*app);
       return 0;
+    }
     case WM_MOUSEWHEEL: {
       // Re-rendering every pose is not free, so collect notches and resize once the wheel
       // stops. (Windows 10+ delivers wheel messages to the hovered window by default.)
@@ -1469,6 +1488,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   app.gameLowPower = ini.getInt("general", "game_low_power", 1) != 0;
   app.bubbleMs = ini.getInt("general", "bubble_ms", 3000);
   app.chatterMin = ini.getInt("general", "chatter_minutes", 20);
+  app.clicks = pet::ClickCounter((int)GetDoubleClickTime());
   app.savedX = ini.getInt("general", "start_x", -1);
   app.configShip = widen(ini.get("general", "ship", "belfast"));
   app.configSkin = widen(ini.get("general", "skin", ""));
