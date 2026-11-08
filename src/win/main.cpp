@@ -49,7 +49,7 @@ const UINT_PTR ID_ANIM = 1, ID_WATCH = 2, ID_DRAG = 3, ID_RESIZE = 4, ID_CHATTER
 const UINT WM_TRAY = WM_APP + 1;
 const UINT WM_CHAT_DONE = WM_APP + 2;  // lParam: ChatResult* from the worker thread
 const UINT WM_YIELD_PROBED = WM_APP + 3;  // wParam: token, lParam: new pet::ProbeResult (petwin::ProbeThread)
-const int kChatterChoices[] = {0, 10, 20, 30, 60};  // minutes; 0 = off
+const int kChatterChoices[] = {0, 3, 10, 20, 30, 60};  // minutes; 0 = off
 enum {
   IDM_TOGGLE = 100, IDM_AUTOSTART, IDM_HIDE_FS, IDM_OPEN_ASSETS, IDM_EXIT,
   IDM_SIZE_UP, IDM_SIZE_DOWN, IDM_SIZE_RESET, IDM_CLICKTHROUGH,

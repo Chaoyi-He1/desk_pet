@@ -31,7 +31,7 @@
 
 using pet::Anim;
 
-static const int kChatterChoices[] = {0, 10, 20, 30, 60};  // minutes; 0 = off
+static const int kChatterChoices[] = {0, 3, 10, 20, 30, 60};  // minutes; 0 = off
 
 // ---------- helpers ----------
 
