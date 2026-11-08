@@ -64,10 +64,10 @@ def quantize(folder):
     return render38.quantize(folder)
 
 
-def build_sd(model, dst):
+def build_sd(model, dst, skip=()):
     import render38
     lines = []
-    w, h = render38.export(os.path.join(CHAR, model), dst, char_px=CHAR_PX, log=lines.append)
+    w, h = render38.export(os.path.join(CHAR, model), dst, char_px=CHAR_PX, log=lines.append, skip=skip)
     note = quantize(dst)
     if note:
         lines.append(note)
@@ -137,7 +137,7 @@ def main():
                 continue
             if not a.no_sd and s.get("sd"):
                 if os.path.isdir(os.path.join(CHAR, s["sd"])):
-                    sd_jobs.append((key, s["sd"], os.path.join(skins_dir, "Q版-" + label)))
+                    sd_jobs.append((key, s["sd"], os.path.join(skins_dir, "Q版-" + label), tuple(s.get("sd_skip", ()))))
                 else:
                     print(f"{key:9s} chibi    {label:28s} MISSING model {s['sd']} (run tools/extract_from_device.py)")
 
@@ -176,7 +176,7 @@ def main():
     if sd_jobs:
         print(f"rendering {len(sd_jobs)} chibi models with {a.jobs} workers ...")
         with ProcessPoolExecutor(max_workers=a.jobs) as ex:
-            futs = {ex.submit(build_sd, model, dst): (key, model) for key, model, dst in sd_jobs}
+            futs = {ex.submit(build_sd, model, dst, skip): (key, model) for key, model, dst, skip in sd_jobs}
             for fut in as_completed(futs):
                 key, model = futs[fut]
                 try:

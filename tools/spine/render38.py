@@ -17,7 +17,13 @@ become random one-shot actions (blink_* folders): the dorm idles stand and stand
 skin's signature loops), sit, dance, victory, wash, skill, attack, and idol/jump where a
 model has them. Actions much bigger than the character (MAX_AREA_RATIO: every state shares
 one canvas) or longer than MAX_ONESHOT_SEC are left out; stand2 is left out when it is the
-same loop as stand, and the loop the idle plays is not repeated as an action.
+same loop as stand, and the loop the idle plays is not repeated as an action. The head pat
+(react_head) is the one exception to the size rule: a click must look different from the
+body tap, so an oversized head pat is still exported, drawn cut to the canvas of the other
+states (props and effects beyond it are lost; some skins run out of the window and back).
+Skins whose head pat is a whole stage scene opt out with sd_skip in tools/ships.json. An
+optional state whose animation is the same data as another exported state's (some models
+store one animation under two names) is left out too.
 """
 import argparse
 import ctypes
@@ -37,15 +43,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # state folder -> candidate animations in order of preference. Folders "<state>_<suffix>"
 # are extra variants of <state>: blink_* are random idle actions, react_head is the head pat.
-# A model without any candidate of an optional state simply gets no folder for it. Not
-# exported: dead, move/move_left (walk variants) and attack_left (the mirror of attack).
+# A model without any candidate of an optional state simply gets no folder for it (no
+# react_head: the app plays the body tap for head pats). Not exported: dead, move/move_left
+# (walk variants) and attack_left (the mirror of attack).
 STATE_CANDIDATES = [
     ("idle", ["stand2", "normal", "stand"]),
     ("walk", ["walk", "move"]),
     ("drag", ["tuozhuai", "tuozhuai2"]),
     ("fall", ["tuozhuai2", "tuozhuai"]),
     ("react", ["touch", "motou"]),
-    ("react_head", ["motou", "touch"]),
+    ("react_head", ["motou"]),       # drawn cut to the canvas when oversized: see choose_states
     ("sleep", ["sleep"]),
     ("land", ["yun"]),
     ("blink_stand", ["stand"]),      # dorm idle
@@ -413,9 +420,36 @@ def area(box):
     return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
 
 
-def choose_states(model, fps, log=print):
-    """Picks an animation per state (see STATE_CANDIDATES). Returns {state: anim}."""
+def same_animation(a, b):
+    """True when two animations are the same data (some models store one animation under
+    two names, e.g. victory and motou)."""
+    if a is b:
+        return True
+    if abs(a.duration - b.duration) > 1e-6 or len(a.timelines) != len(b.timelines):
+        return False
+    return _plain(a.timelines) == _plain(b.timelines)
+
+
+def _plain(o):
+    """A comparable plain-data copy of timelines (dataclasses, tuples, numpy arrays)."""
+    import dataclasses
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if dataclasses.is_dataclass(o) and not isinstance(o, type):
+        return tuple(_plain(getattr(o, f.name)) for f in dataclasses.fields(o))
+    if isinstance(o, (list, tuple)):
+        return tuple(_plain(v) for v in o)
+    if isinstance(o, dict):
+        return tuple(sorted((str(k), _plain(v)) for k, v in o.items()))
+    return o
+
+
+def choose_states(model, fps, log=print, skip=()):
+    """Picks an animation per state (see STATE_CANDIDATES). Returns ({state: anim}, clipped):
+    `clipped` are the states drawn cut to the other states' canvas (an oversized head pat).
+    `skip`: state folders not to export at all."""
     boxes = {}
+    clipped = set()
 
     def box_of(name):
         if name not in boxes:
@@ -429,6 +463,9 @@ def choose_states(model, fps, log=print):
     ref = min(area(b) for _, b in idle_boxes)
     chosen = {}
     for state, cands in STATE_CANDIDATES:
+        if state in skip:
+            log(f"  skip {state:13s}: sd_skip")
+            continue
         ok = []
         for c in cands:
             anim = model.anim(c)
@@ -436,12 +473,17 @@ def choose_states(model, fps, log=print):
             if b is None:
                 continue
             ratio = area(b) / ref
-            if ratio > MAX_AREA_RATIO:
+            # a head pat has to differ from the body tap: oversized, it is drawn cut to the canvas
+            oversized = ratio > MAX_AREA_RATIO
+            if oversized and state != "react_head":
                 log(f"  skip {c:10s} for {state:13s}: {ratio:.1f}x the character")
                 continue
             if state not in REQUIRED and anim.duration > MAX_ONESHOT_SEC:
                 log(f"  skip {c:10s} for {state:13s}: {anim.duration:.1f}s long")
                 continue
+            if oversized:
+                log(f"  cut  {c:10s} for {state:13s}: {ratio:.1f}x the character, drawn cut to the canvas")
+                clipped.add(state)
             ok.append(anim)
         if ok:
             # idle loops forever: the shortest calm loop keeps the frame count (RAM) down
@@ -461,7 +503,20 @@ def choose_states(model, fps, log=print):
             why = "the idle's own loop" if idle == own else "the same loop as " + twin
             log(f"  skip {own:10s} for {state:13s}: {why}")
             del chosen[state]
-    return chosen
+    # One animation under two names: exported once (the first state in STATE_CANDIDATES order).
+    kept = []
+    for state, _ in STATE_CANDIDATES:
+        a = chosen.get(state)
+        if a is None:
+            continue
+        twin = next((s for s, b in kept if same_animation(a, b)), None)
+        if twin is not None and state not in REQUIRED:
+            log(f"  skip {a.name:10s} for {state:13s}: the same animation as {twin} ({chosen[twin].name})")
+            del chosen[state]
+            clipped.discard(state)
+        else:
+            kept.append((state, a))
+    return chosen, clipped
 
 
 AIRBORNE = {"drag", "fall"}  # held by the mouse or falling: placed by the app, not by the ground
@@ -497,14 +552,16 @@ def ground_lifts(m, plan, box, scale):
     return lifts
 
 
-def export(model_dir, out_dir, fps=10.0, scale=None, ss=3, mapping=None, char_px=480, log=print):
+def export(model_dir, out_dir, fps=10.0, scale=None, ss=3, mapping=None, char_px=480, log=print, skip=()):
     """`scale` px per skeleton unit; by default chosen so the idle character is `char_px` tall,
-    which keeps every model equally sharp whatever its skeleton units."""
+    which keeps every model equally sharp whatever its skeleton units. `skip`: state folders
+    not to export (tools/ships.json sd_skip)."""
     m = Model(model_dir)
+    clipped = set()
     if mapping:
-        chosen = {s: m.anim(a) for s, a in mapping.items() if m.anim(a)}
+        chosen = {s: m.anim(a) for s, a in mapping.items() if m.anim(a) and s not in skip}
     else:
-        chosen = choose_states(m, fps, log)
+        chosen, clipped = choose_states(m, fps, log, skip)
     plan = {s: (a, frame_times(a, fps)) for s, a in chosen.items()}
     if scale is None:
         idle_anim, idle_times = plan["idle"]
@@ -513,7 +570,8 @@ def export(model_dir, out_dir, fps=10.0, scale=None, ss=3, mapping=None, char_px
     pad = 6 / scale
     # every frame: the apex of a reaction (touch) is one frame long and was cut off when only
     # every other frame was measured
-    vbs = {s: m.visible_box([(a, t)], step=1) for s, (a, t) in plan.items()}
+    # the canvas holds every state but the clipped ones, which are drawn cut to it
+    vbs = {s: m.visible_box([(a, t)], step=1) for s, (a, t) in plan.items() if s not in clipped}
     vb = union_box(vbs.values())
     lift = ground_lifts(m, plan, (vb[0] - pad, min(vb[1], 0.0) - pad, vb[2] + pad, vb[3] + pad), scale)
     vb = union_box((b[0], b[1] + lift.get(s, 0.0), b[2], b[3] + lift.get(s, 0.0)) for s, b in vbs.items() if b)
@@ -521,7 +579,8 @@ def export(model_dir, out_dir, fps=10.0, scale=None, ss=3, mapping=None, char_px
     W = int(math.ceil((box[2] - box[0]) * scale))
     H = int(math.ceil((box[3] - box[1]) * scale))
     log(f"{m.name}: canvas {W}x{H}; " + ", ".join(f"{s}={a.name}" for s, (a, _) in plan.items())
-        + ("; lifted " + ", ".join(f"{s} {v * scale:.0f}px" for s, v in lift.items()) if lift else ""))
+        + ("; lifted " + ", ".join(f"{s} {v * scale:.0f}px" for s, v in lift.items()) if lift else "")
+        + ("; cut to the canvas: " + ", ".join(sorted(clipped)) if clipped else ""))
 
     head_top, heights = None, []
     for state, (anim, times) in plan.items():

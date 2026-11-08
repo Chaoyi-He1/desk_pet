@@ -1,5 +1,5 @@
 {
-  "_comment": "Curated per-ship data for tools/build_ships.py. num: menu order and the key that ties a skin to its voice table. painting: file under assets/official/ (stills/<model>.png: a background-free still rendered from the dynamic painting or Live2D, for skins whose official picture has scenery baked in). sd: chibi model under assets/official/game/unpacked/char/. wiki: title of the skin's voice table on the bilibili wiki ('' = default table). wiki_page: a wiki page of its own whose default table holds this skin's lines (forms the game treats as separate ships: 小贝法, 小柴郡, 小信浓, 能代(μ兵装)). voice: borrow another skin's table instead. dyn: dynamic painting under assets/official/dynamic/ (tools/spine export_painting). l2d: Live2D frames under assets/official/l2d_skins/ (tools/live2d).",
+  "_comment": "Curated per-ship data for tools/build_ships.py. num: menu order and the key that ties a skin to its voice table. painting: file under assets/official/ (stills/<model>.png: a background-free still rendered from the dynamic painting or Live2D, for skins whose official picture has scenery baked in). sd: chibi model under assets/official/game/unpacked/char/. wiki: title of the skin's voice table on the bilibili wiki ('' = default table). wiki_page: a wiki page of its own whose default table holds this skin's lines (forms the game treats as separate ships: 小贝法, 小柴郡, 小信浓, 能代(μ兵装)). voice: borrow another skin's table instead. dyn: dynamic painting under assets/official/dynamic/ (tools/spine export_painting). l2d: Live2D frames under assets/official/l2d_skins/ (tools/live2d). sd_skip: pet state folders not to render from the chibi, e.g. [react_head] where the head pat is a whole stage scene that cannot be cut to the pet canvas.",
   "belfast": {
     "name": "贝尔法斯特",
     "wiki_page": "贝尔法斯特",
@@ -29,7 +29,7 @@
       {"num": "03", "id": 299032, "name": "音乐绚烂CaitSith", "painting": "cheshire_299032_painting_n.png", "sd": "chaijun_3", "wiki": "音乐绚烂CaitSith", "l2d": "chaijun_3"},
       {"num": "04", "id": 299033, "name": "冰雪公主", "painting": "cheshire_299033_painting_n.png", "sd": "chaijun_4", "wiki": "冰雪公主", "l2d": "chaijun_4"},
       {"num": "05", "id": 299034, "name": "绚烂夜梦", "painting": "cheshire_299034_painting_n.png", "sd": "chaijun_5", "wiki": "绚烂夜梦", "l2d": "chaijun_5"},
-      {"num": "06", "id": 299035, "name": "柴郡猫的童话书迷宫", "painting": "stills/chaijun_6.png", "sd": "chaijun_6", "wiki": "柴郡猫的童话书迷宫", "l2d": "chaijun_6"},
+      {"num": "06", "id": 299035, "name": "柴郡猫的童话书迷宫", "painting": "stills/chaijun_6.png", "sd": "chaijun_6", "wiki": "柴郡猫的童话书迷宫", "l2d": "chaijun_6", "sd_skip": ["react_head"]},
       {"num": "07", "id": 299038, "name": "White Seaside Melody", "painting": "cheshire_299038_painting_n.png", "sd": "chaijun_h", "wiki": "【誓约】White Seaside Melody！", "oath": true},
       {"num": "08", "name": "童年", "sd": "chaijun_younv", "wiki_page": "小柴郡"}
     ]
@@ -43,7 +43,7 @@
       {"num": "02", "id": 307081, "name": "胧月十夜", "painting": "shinano_307081_painting.png", "sd": "xinnong_2", "wiki": "胧月十夜"},
       {"num": "03", "id": 307082, "name": "轰鸣的银轮", "painting": "shinano_307082_painting_n.png", "sd": "xinnong_3", "wiki": "轰鸣的银轮", "l2d": "xinnong_3"},
       {"num": "04", "id": 307083, "name": "白沙幽梦", "painting": "stills/xinnong_4.png", "sd": "xinnong_4", "wiki": "白沙幽梦", "l2d": "xinnong_4"},
-      {"num": "05", "id": 307084, "name": "幻梦奇术", "painting": "shinano_307084_painting_n.png", "sd": "xinnong_5", "wiki": "幻梦奇术", "l2d": "xinnong_5"},
+      {"num": "05", "id": 307084, "name": "幻梦奇术", "painting": "shinano_307084_painting_n.png", "sd": "xinnong_5", "wiki": "幻梦奇术", "l2d": "xinnong_5", "sd_skip": ["react_head"]},
       {"num": "06", "id": 307085, "name": "相融一梦", "painting": "stills/xinnong_6.png", "sd": "xinnong_6", "wiki": "相融一梦", "l2d": "xinnong_6"},
       {"num": "07", "name": "童年", "sd": "xinnong_younv", "wiki_page": "小信浓"}
     ]
