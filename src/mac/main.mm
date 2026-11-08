@@ -138,7 +138,7 @@ struct Ship {
                               defer:NO];
   if (self) {
     self.title = @"和她聊天";
-    self.level = NSFloatingWindowLevel;
+    self.level = CGWindowLevelForKey(kCGDockWindowLevelKey) + 1;  // the pet's level, so the box is never behind her
     self.hidesOnDeactivate = NO;
     self.releasedWhenClosed = NO;
     self.floatingPanel = YES;
@@ -550,7 +550,7 @@ struct Ship {
   panel_.opaque = NO;
   panel_.backgroundColor = NSColor.clearColor;
   panel_.hasShadow = NO;
-  panel_.level = NSFloatingWindowLevel;
+  panel_.level = CGWindowLevelForKey(kCGDockWindowLevelKey) + 1;  // above the Dock: her feet are on the screen's bottom edge
   panel_.hidesOnDeactivate = NO;
   panel_.becomesKeyOnlyIfNeeded = YES;
   panel_.movableByWindowBackground = NO;
@@ -768,10 +768,12 @@ struct Ship {
 }
 
 - (void)updateGround {
-  NSRect work = [self petScreen].visibleFrame;
+  NSScreen* screen = [self petScreen];
+  NSRect work = screen.visibleFrame;
   CGFloat sh = screenH();
   brain_->setWorkTop((int)(sh - NSMaxY(work)));
-  brain_->setGround((int)NSMinX(work), (int)NSMaxX(work), (int)(sh - NSMinY(work)));
+  // Her feet are on the screen's bottom edge (over the Dock); the sides are the visible frame's.
+  brain_->setGround((int)NSMinX(work), (int)NSMaxX(work), (int)(sh - NSMinY(screen.frame)));
 }
 
 - (void)screenChanged {

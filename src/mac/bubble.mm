@@ -44,7 +44,7 @@ static const CGFloat kPad = 10, kTail = 8, kMaxText = 240, kRadius = 12;
     panel_.opaque = NO;
     panel_.backgroundColor = NSColor.clearColor;
     panel_.hasShadow = NO;
-    panel_.level = NSFloatingWindowLevel;
+    panel_.level = CGWindowLevelForKey(kCGDockWindowLevelKey) + 1;  // the pet's level, so the bubble is never behind her
     panel_.ignoresMouseEvents = YES;
     panel_.hidesOnDeactivate = NO;
     panel_.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary |

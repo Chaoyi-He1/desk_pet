@@ -222,7 +222,8 @@ RECT workArea(HWND hwnd) {
   return r;
 }
 
-// Every display's work area, in virtual-screen pixels: the floors she may stand on.
+// Every display, in virtual-screen pixels: the floors she may stand on. Her feet are on the
+// screen's bottom edge (over the taskbar); the sides and the top are the work area's.
 std::vector<pet::Rect> displayFloors(HWND hwnd) {
   std::vector<pet::Rect> out;
   EnumDisplayMonitors(nullptr, nullptr,
@@ -230,13 +231,13 @@ std::vector<pet::Rect> displayFloors(HWND hwnd) {
                         MONITORINFO mi = {sizeof(mi)};
                         if (GetMonitorInfoW(m, &mi))
                           reinterpret_cast<std::vector<pet::Rect>*>(lp)->push_back(
-                              {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom});
+                              {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcMonitor.bottom});
                         return TRUE;
                       },
                       reinterpret_cast<LPARAM>(&out));
   if (out.empty()) {
     RECT w = workArea(hwnd);
-    out.push_back({w.left, w.top, w.right, w.bottom});
+    out.push_back({w.left, w.top, w.right, GetSystemMetrics(SM_CYSCREEN)});
   }
   return out;
 }
@@ -657,7 +658,7 @@ bool loadSkin(App& app, int ship, const std::wstring& skin, std::wstring* err) {
     if (!onScreen) {  // first run, or her display is gone: the right side of this display
       RECT work = workArea(app.hwnd);
       x = work.right - cfg.spriteW - 24;
-      y = work.bottom - cfg.spriteH;
+      y = monitorRect(app.hwnd).bottom - cfg.spriteH;
     }
     app.brain->setFloors(floors);
     app.brain->setPosition(x, y);
