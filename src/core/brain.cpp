@@ -157,12 +157,17 @@ void Brain::release() {
     }
     return;
   }
-  // Plain click: the top part of the canvas is the head.
-  // Some body taps are the "special touch": its line, and its motion when there is one.
+  // Plain click: the top part of the canvas is the head. Body taps split three ways: the
+  // "special touch" (its line, and its motion when there is one), one of the random actions
+  // (with the plain touch line), or the plain touch.
   bool head = offY_ < cfg_.headFraction * cfg_.spriteH;
-  bool special = !head && std::uniform_real_distribution<double>(0.0, 1.0)(rng_) < cfg_.specialChance;
+  double u = head ? 1.0 : std::uniform_real_distribution<double>(0.0, 1.0)(rng_);
+  bool special = u < cfg_.specialChance;
+  bool action = !special && u < cfg_.specialChance + cfg_.tapActionChance && available(Anim::Blink);
   pendingEvent_ = head ? PetEvent::TapHead : special ? PetEvent::TapSpecial : PetEvent::TapBody;
-  if (available(Anim::React)) {
+  if (action) {
+    enter(Anim::Blink);
+  } else if (available(Anim::React)) {
     int variants = static_cast<int>(cfg_.variants[(int)Anim::React].size());
     int v = 0;
     if (head && cfg_.reactHead >= 0 && cfg_.reactHead < variants) v = cfg_.reactHead;

@@ -160,6 +160,7 @@ static BrainConfig testCfg() {
   for (int i = 0; i < (int)Anim::Count; ++i) c.setFrames((Anim)i, 2);
   c.walkSpeed = 100;
   c.sleepAfterSec = 10;
+  c.tapActionChance = 0;  // body taps stay plain unless a test turns actions on
   return c;
 }
 static Brain makeBrain(unsigned seed = 1, BrainConfig c = testCfg()) {
@@ -252,20 +253,83 @@ TEST(brain_special_touch_without_motion_keeps_body_variant) {
   CHECK(f.event == PetEvent::TapSpecial);  // still picks the special-touch line
 }
 
-TEST(brain_special_touch_share) {
+TEST(brain_body_tap_can_play_a_random_action) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::React] = {2, 3};  // body, head pat
+  c.variants[(int)Anim::Blink] = {3, 4, 5};
+  c.specialChance = 0;
+  c.tapActionChance = 1;
+  Brain b = makeBrain(1, c);
+  b.tick(0);
+  b.press(110, 590);  // body
+  b.release();
+  Frame f = b.tick(0);
+  CHECK(f.anim == Anim::Blink);
+  CHECK(f.event == PetEvent::TapBody);  // still the touch line
+  b.tick(10000);
+  b.press(110, 555);  // head pats are never replaced
+  b.release();
+  f = b.tick(0);
+  CHECK(f.anim == Anim::React);
+  CHECK_EQ(f.variant, 1);
+  CHECK(f.event == PetEvent::TapHead);
+}
+
+TEST(brain_tap_action_picks_any_of_the_actions) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::Blink] = {1, 1, 1};
+  c.specialChance = 0;
+  c.tapActionChance = 1;
+  Brain b = makeBrain(3, c);
+  b.tick(0);
+  bool seen[3] = {false, false, false};
+  for (int i = 0; i < 60; ++i) {
+    b.press(110, 590);
+    b.release();
+    Frame f = b.tick(0);
+    CHECK(f.anim == Anim::Blink);
+    seen[f.variant % 3] = true;
+    b.tick(5000);
+  }
+  CHECK(seen[0] && seen[1] && seen[2]);
+}
+
+TEST(brain_tap_action_needs_action_frames) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::Blink].clear();
+  c.specialChance = 0;
+  c.tapActionChance = 1;
+  Brain b = makeBrain(1, c);
+  b.tick(0);
+  b.press(110, 590);
+  b.release();
+  Frame f = b.tick(0);
+  CHECK(f.anim == Anim::React);  // the plain touch
+  CHECK_EQ(f.variant, 0);
+  CHECK(f.event == PetEvent::TapBody);
+}
+
+TEST(brain_body_tap_shares) {
   BrainConfig c = testCfg();
   c.variants[(int)Anim::React] = {1, 1, 1};
   c.reactSpecial = 2;
+  c.specialChance = 0.35;
+  c.tapActionChance = 0.30;
   Brain b = makeBrain(7, c);
   b.tick(0);
-  int special = 0;
+  int special = 0, action = 0, plain = 0;
   for (int i = 0; i < 400; ++i) {
     b.press(110, 590);
     b.release();
-    special += b.tick(0).event == PetEvent::TapSpecial;
+    Frame f = b.tick(0);
+    if (f.event == PetEvent::TapSpecial) ++special;
+    else if (f.anim == Anim::Blink) ++action;
+    else ++plain;
     b.tick(5000);
   }
-  CHECK(special > 60 && special < 140);  // about 25%
+  CHECK(special > 100 && special < 180);  // about 35%
+  CHECK(action > 80 && action < 160);     // about 30%
+  CHECK(plain > 100 && plain < 180);      // the rest
 }
 
 TEST(brain_click_without_react_frames_still_reports) {

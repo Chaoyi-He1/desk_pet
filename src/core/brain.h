@@ -18,11 +18,13 @@ struct BrainConfig {
   int sleepAfterSec = 180;                               // user idle time before sleeping
   int fps[(int)Anim::Count] = {2, 8, 8, 4, 8, 6, 1, 8};  // per Anim
   // Frame count of each variant, per Anim. Empty = the animation is not available
-  // (Blink / Land / React are then skipped). Body taps play React variant 0.
+  // (Blink / Land / React are then skipped). Body taps play React variant 0, or one of
+  // the Blink variants (the random actions) for a share of them.
   std::vector<int> variants[(int)Anim::Count];
   int reactHead = 1;                                     // React variant for head pats
   int reactSpecial = -1;                                 // "special touch" variant, -1: none
-  double specialChance = 0.25;                           // share of body taps that are special
+  double specialChance = 0.35;                           // share of body taps that are special
+  double tapActionChance = 0.30;                         // share of body taps that play a random action instead
   int spriteW = 96, spriteH = 144;                       // on-screen canvas size
   int groundInset = 0;                                   // px from canvas bottom up to the feet
   double headFraction = 0.22;                            // clicks in this top part of the canvas hit the head
