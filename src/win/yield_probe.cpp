@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <oleacc.h>
+#include <uiautomation.h>
 
 #include <cmath>
 #include <cwchar>
@@ -12,8 +13,8 @@
 namespace petwin {
 namespace {
 
-// The taskbar (and a second display's): the Windows 11 one is XAML and does not answer the
-// MSAA hit test with its buttons, and it is buttons end to end anyway.
+// The taskbar (and a second display's). The Windows 11 one is XAML and does not answer the MSAA
+// hit test with its buttons; UI Automation lists them (taskbarButtons below).
 bool isTaskbar(HWND w) {
   wchar_t cls[64] = {};
   GetClassNameW(w, cls, 64);
@@ -237,6 +238,102 @@ bool waking(HWND w) {
   return r;
 }
 
+// The taskbar's buttons as UI Automation lists them (Start, search, the app buttons, the tray
+// icons, the clock...), with their screen rectangles. The listing takes about 30 ms. False when
+// the taskbar could not be asked or listed nothing.
+bool listTaskbarButtons(HWND w, double scale, std::vector<pet::Rect>* out) {
+  IUIAutomation* uia = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_IUIAutomation, (void**)&uia)) || !uia)
+    return false;
+  bool ok = false;
+  IUIAutomationElement* root = nullptr;
+  IUIAutomationCondition* cond = nullptr;
+  IUIAutomationCacheRequest* cache = nullptr;
+  IUIAutomationElementArray* found = nullptr;
+  if (SUCCEEDED(uia->ElementFromHandle(w, &root)) && root && SUCCEEDED(uia->CreateTrueCondition(&cond)) && cond &&
+      SUCCEEDED(uia->CreateCacheRequest(&cache)) && cache) {
+    cache->AddProperty(UIA_ControlTypePropertyId);
+    cache->AddProperty(UIA_BoundingRectanglePropertyId);
+    cache->AddProperty(UIA_IsOffscreenPropertyId);
+    cache->put_AutomationElementMode(AutomationElementMode_None);  // the properties only, in one round trip
+    if (SUCCEEDED(root->FindAllBuildCache(TreeScope_Subtree, cond, cache, &found)) && found) {
+      ok = true;
+      int n = 0;
+      found->get_Length(&n);
+      for (int i = 0; i < n; ++i) {
+        IUIAutomationElement* e = nullptr;
+        if (FAILED(found->GetElement(i, &e)) || !e) continue;
+        CONTROLTYPEID type = 0;
+        BOOL off = FALSE;
+        RECT r{};
+        e->get_CachedControlType(&type);
+        e->get_CachedIsOffscreen(&off);
+        e->get_CachedBoundingRectangle(&r);
+        e->Release();
+        switch (type) {  // Windows 11 lists every item as a Button; the classic taskbar has the others too
+          case UIA_ButtonControlTypeId:
+          case UIA_SplitButtonControlTypeId:
+          case UIA_MenuItemControlTypeId:
+          case UIA_CheckBoxControlTypeId:
+          case UIA_RadioButtonControlTypeId:
+          case UIA_HyperlinkControlTypeId:
+          case UIA_ListItemControlTypeId:
+          case UIA_TabItemControlTypeId:
+          case UIA_ComboBoxControlTypeId:
+          case UIA_SliderControlTypeId:
+            break;
+          default:
+            continue;
+        }
+        if (off || r.right <= r.left || r.bottom <= r.top) continue;
+        pet::ElementFacts f;
+        f.kind = pet::ElementKind::Control;
+        f.hasSize = true;
+        f.w = (int)lround((r.right - r.left) / scale);
+        f.h = (int)lround((r.bottom - r.top) / scale);
+        if (pet::judgeElement(f) == pet::Judgement::Clickable)
+          out->push_back(pet::Rect{(int)r.left, (int)r.top, (int)r.right, (int)r.bottom});
+      }
+      found->Release();
+    }
+  }
+  if (cache) cache->Release();
+  if (cond) cond->Release();
+  if (root) root->Release();
+  uia->Release();
+  return ok && !out->empty();
+}
+
+// listTaskbarButtons, at most twice a second per taskbar: the probes come cell by cell, and the
+// listing of a moment ago serves them all.
+bool taskbarButtons(HWND w, double scale, std::vector<pet::Rect>* out) {
+  struct Listing {
+    ULONGLONG stamp;
+    bool ok;
+    std::vector<pet::Rect> rects;
+  };
+  static SRWLOCK lock = SRWLOCK_INIT;
+  static std::map<HWND, Listing> known;
+  ULONGLONG now = GetTickCount64();
+  bool fresh = false, ok = false;
+  AcquireSRWLockShared(&lock);
+  auto it = known.find(w);
+  if (it != known.end() && now - it->second.stamp < 500) {
+    fresh = true;
+    ok = it->second.ok;
+    *out = it->second.rects;
+  }
+  ReleaseSRWLockShared(&lock);
+  if (fresh) return ok;
+  Listing l{now, false, {}};
+  l.ok = listTaskbarButtons(w, scale, &l.rects);
+  *out = l.rects;
+  AcquireSRWLockExclusive(&lock);
+  known[w] = l;
+  ReleaseSRWLockExclusive(&lock);
+  return l.ok;
+}
+
 }  // namespace
 
 std::vector<pet::WindowInfo> windowsBelow(HWND pet, const RECT& region) {
@@ -280,11 +377,20 @@ pet::ProbeResult probeIn(HWND w, POINT pt, double scale) {
     out.state = pet::CellState::Plain;
     return out;
   }
-  if (isTaskbar(w)) {  // she stands on it: every pixel of it is something to click
-    RECT r;
-    GetWindowRect(w, &r);
-    out.state = pet::CellState::Clickable;
-    out.rect = pet::Rect{(int)r.left, (int)r.top, (int)r.right, (int)r.bottom};
+  if (isTaskbar(w)) {  // she stands on it: its buttons are what there is to click, the stretch between them nothing
+    std::vector<pet::Rect> buttons;
+    if (!taskbarButtons(w, scale, &buttons)) {  // could not be listed: every pixel of it, to be safe
+      RECT r;
+      GetWindowRect(w, &r);
+      out.state = pet::CellState::Clickable;
+      out.rect = pet::Rect{(int)r.left, (int)r.top, (int)r.right, (int)r.bottom};
+      return out;
+    }
+    out.state = pet::CellState::Plain;
+    if (const pet::Rect* b = pet::controlAt(buttons, pt.x, pt.y)) {
+      out.state = pet::CellState::Clickable;
+      out.rect = *b;
+    }
     return out;
   }
   POINT local = pt;

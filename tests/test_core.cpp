@@ -572,6 +572,32 @@ TEST(brain_floors_walks_onto_the_neighbouring_display) {
   CHECK(sawLeftAgain);
 }
 
+// A game takes the left display while she is walking towards it: the walk ends at the edge
+// of the display she still has, her feet never over the game.
+TEST(brain_floors_a_walk_stops_at_the_edge_when_its_display_is_taken_away) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::Blink].clear();  // walks only
+  Brain b(c, 2);
+  std::vector<pet::Rect> both = {{0, 0, 800, 600}, {800, 0, 1600, 600}};
+  b.setFloors(both);
+  b.setPosition(1200, 0);
+  Frame f = b.tick(0);
+  int leftwardWalks = 0;
+  for (int i = 0; i < 200000 && leftwardWalks < 30; ++i) {
+    f = b.tick(f.nextTickMs ? f.nextTickMs : 500);
+    if (f.anim != Anim::Walk || !f.facingLeft || f.x + 16 < 800) continue;
+    ++leftwardWalks;  // heading left on the right display: maybe for the left one
+    b.setFloors({both[1]});
+    for (int j = 0; j < 20000 && f.anim == Anim::Walk; ++j) {
+      f = b.tick(f.nextTickMs ? f.nextTickMs : 500);
+      CHECK(f.x >= 800);
+      if (f.x < 800) return;
+    }
+    b.setFloors(both);
+  }
+  CHECK_EQ(leftwardWalks, 30);
+}
+
 // A slightly lower neighbour: she walks off the edge, falls and lands on its ground;
 // coming back she just steps up.
 TEST(brain_floors_drops_onto_a_lower_display_and_steps_back_up) {
@@ -1539,6 +1565,21 @@ TEST(yield_control_rects_cover_gaps_between_icons) {
   CHECK_EQ(r.size(), (size_t)0);
 }
 
+TEST(yield_control_at_finds_the_taskbar_button_under_the_point) {
+  // The Windows 11 taskbar as UI Automation lists it: Start, the app buttons, the tray. The stretch
+  // between the last app button and the tray is empty, and so is the one left of Start.
+  std::vector<Rect> taskbar = {{518, 1032, 563, 1080}, {831, 1032, 875, 1080}, {875, 1032, 919, 1080},
+                               {1609, 1032, 1641, 1080}, {1908, 1032, 1920, 1080}};
+  CHECK(controlAt(taskbar, 540, 1050) == &taskbar[0]);
+  CHECK(controlAt(taskbar, 831, 1032) == &taskbar[1]);  // left and top edges inclusive
+  CHECK(controlAt(taskbar, 875, 1050) == &taskbar[2]);  // right edge exclusive: the next button's
+  CHECK(controlAt(taskbar, 1919, 1079) == &taskbar[4]);
+  CHECK(controlAt(taskbar, 1500, 1050) == nullptr);  // the empty stretch
+  CHECK(controlAt(taskbar, 300, 1050) == nullptr);
+  CHECK(controlAt(taskbar, 540, 1031) == nullptr);  // above the taskbar
+  CHECK(controlAt(std::vector<Rect>(), 540, 1050) == nullptr);
+}
+
 // ---------- frames ----------
 static const unsigned char kLz4In[] = {59,97,98,99,3,0,255,29,88,89,90,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,7,1,0,255,23,80,7,7,101,110,100};
 
@@ -1715,6 +1756,18 @@ TEST(refuge_move_keeps_her_inside_a_narrow_display) {
       r.tick({{0, 0, 1920, 1080}, {1920, 0, 2560, 1080}}, {true, false}, 1800, 936, 200, 144);
   CHECK(a.action == pet::FullscreenRefuge::Action::Move);
   CHECK(a.x >= 1920 && a.x + 200 <= 2560);
+}
+
+TEST(free_floors_leave_out_the_covered_displays) {
+  // A game fills display 0: she may walk on display 1 only, so she cannot wander back over the game.
+  std::vector<pet::Rect> floors = {{0, 0, 1920, 1080}, {1920, 0, 3840, 1080}};
+  std::vector<pet::Rect> f = pet::freeFloors(floors, {true, false});
+  CHECK_EQ(f.size(), (size_t)1);
+  CHECK(f.size() == 1 && f[0].left == 1920);
+  CHECK_EQ(pet::freeFloors(floors, {false, false}).size(), (size_t)2);
+  CHECK_EQ(pet::freeFloors(floors, {true, true}).size(), (size_t)2);  // none free: she is hidden, keep them all
+  CHECK_EQ(pet::freeFloors(floors, {}).size(), (size_t)2);            // nothing known yet
+  CHECK_EQ(pet::freeFloors(floors, {true}).size(), (size_t)2);        // the lists do not match (a display just changed)
 }
 
 TEST(brain_low_power_halves_the_frame_rate) {

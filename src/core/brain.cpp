@@ -32,6 +32,11 @@ void Brain::setFloors(const std::vector<Rect>& floors) {
   if (floors_.empty()) return;
   selectFloor(false);
   x_ = clampX(x_);
+  if (anim_ == Anim::Walk) {  // a walk towards a display that is no longer hers ends at the edge
+    int lo, hi;
+    walkRange(&lo, &hi);
+    targetX_ = std::min(std::max(targetX_, lo), std::max(lo, hi - cfg_.spriteW));
+  }
   if (anim_ != Anim::Drag && anim_ != Anim::Fall) y_ = groundTop();
 }
 

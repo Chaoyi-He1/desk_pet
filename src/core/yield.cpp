@@ -102,6 +102,12 @@ Judgement judgeElement(const ElementFacts& e) {
   return Judgement::Climb;
 }
 
+const Rect* controlAt(const std::vector<Rect>& controls, int x, int y) {
+  for (const Rect& r : controls)
+    if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return &r;
+  return nullptr;
+}
+
 void ControlRects::add(const Rect& r, int64_t window, int64_t nowMs) {
   for (auto it = list_.begin(); it != list_.end(); ++it)
     if (it->window == window && it->r.left == r.left && it->r.top == r.top && it->r.right == r.right &&

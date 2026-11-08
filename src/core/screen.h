@@ -33,6 +33,17 @@ inline bool coversMonitor(const Rect& win, const Rect& monitor, int tolerance = 
          win.right >= monitor.right - tolerance && win.bottom >= monitor.bottom - tolerance;
 }
 
+// The floors she may walk on while fullscreen programs fill some displays: the ones not covered,
+// so a walk never takes her over a game. All of them when none is free (she is hidden then) or
+// when the two lists do not match (a display was just added or removed).
+inline std::vector<Rect> freeFloors(const std::vector<Rect>& floors, const std::vector<bool>& covered) {
+  if (covered.size() != floors.size()) return floors;
+  std::vector<Rect> out;
+  for (size_t i = 0; i < floors.size(); ++i)
+    if (!covered[i]) out.push_back(floors[i]);
+  return out.empty() ? floors : out;
+}
+
 // Keeps her off displays that fullscreen programs fill. The shell feeds it every watch tick
 // with every display, which of them are covered, and her canvas rectangle; it answers whether
 // she stays, hides (every display covered) or moves: to the nearest free display when hers is

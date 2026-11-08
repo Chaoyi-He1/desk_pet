@@ -107,6 +107,7 @@ struct App {
   bool gameLowPower = true;  // fewer frames and no yield scans while a program runs fullscreen somewhere
   bool lowPower = false;     // ...and that is the case now
   pet::FullscreenRefuge refuge;  // keeps her off displays that fullscreen programs fill
+  std::vector<bool> covered;     // which displays they fill now: she gets the others as floors (empty: all)
   int bubbleMs = 3000, chatterMin = 20, savedX = -1, savedY = 0;
   std::wstring configShip, configSkin;
 
@@ -537,7 +538,7 @@ void step(App& app, int dtMs) {
   }
 }
 
-void updateGround(App& app) { app.brain->setFloors(displayFloors(app.hwnd)); }
+void updateGround(App& app) { app.brain->setFloors(pet::freeFloors(displayFloors(app.hwnd), app.covered)); }
 
 void updateHidden(App& app) {
   bool hide = app.userHidden || app.fsHidden;
@@ -568,7 +569,15 @@ void fullscreenWatch(App& app) {
   std::vector<RECT> mons = monitorRects();
   std::vector<bool> covered = coveredDisplays(app, mons);
   setLowPower(app, app.gameLowPower && std::find(covered.begin(), covered.end(), true) != covered.end());
-  if (!app.hideOnFullscreen) return;
+  if (!app.hideOnFullscreen) {
+    if (!app.covered.empty()) {  // switched off: every display is hers again
+      app.covered.clear();
+      if (app.last.visible) updateGround(app);
+    }
+    return;
+  }
+  bool floorsChanged = covered != app.covered;
+  app.covered = covered;  // updateGround leaves her the free displays only
   std::vector<pet::Rect> displays;
   for (const RECT& m : mons) displays.push_back({m.left, m.top, m.right, m.bottom});
   pet::FullscreenRefuge::Result r =
@@ -578,8 +587,9 @@ void fullscreenWatch(App& app) {
   if (move) app.brain->setPosition(r.x, r.y);  // before she shows again: no frame over the game
   if (hide != app.fsHidden) {
     app.fsHidden = hide;
-    updateHidden(app);
-  } else if (move) {
+    updateHidden(app);  // re-reads the floors when she shows
+  } else if (!hide && (move || floorsChanged)) {
+    if (floorsChanged) updateGround(app);  // a walk towards the game's display ends at the edge
     app.lastTick = GetTickCount64();
     step(app, 0);
   }

@@ -95,6 +95,10 @@ struct ProbeResult {
 // her counts as on it.
 constexpr int kNearControl = 10;
 
+// The one of `controls` whose rectangle holds (x, y) (left and top edges in, right and bottom
+// out); nullptr when the point is on none of them, e.g. an empty stretch of the taskbar.
+const Rect* controlAt(const std::vector<Rect>& controls, int x, int y);
+
 // Controls found behind her, by screen rectangle and window. Toolbar icons are smaller than a
 // cell and sit between the cells' probe points, and with her in front the user cannot see where
 // to aim; once one is found, the cursor within `margin` of it counts as on it, as long as the
