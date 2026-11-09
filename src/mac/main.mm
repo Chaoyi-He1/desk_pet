@@ -275,6 +275,7 @@ struct Ship {
   cfgBase_.idleMaxMs = ini.getInt("general", "idle_max_ms", 12000);
   cfgBase_.specialChance = ini.getDouble("general", "special_chance", 0.35);
   cfgBase_.tapActionChance = ini.getDouble("general", "tap_action_chance", 0.30);
+  cfgBase_.headActionChance = ini.getDouble("general", "head_action_chance", 0.30);
   cfgBase_.constrainDragToWorkArea = false;
   for (int i = 0; i < (int)Anim::Count; ++i)
     cfgBase_.fps[i] = ini.getInt("fps", pet::animName((Anim)i), cfgBase_.fps[i]);
@@ -489,7 +490,7 @@ struct Ship {
   cfg.groundInset = next->groundInset();
   cfg.headFraction = next->headFraction();
   cfg.canWalk = next->animated() && next->walks();  // a painting sliding across the desktop looks wrong
-  if (kind == 0) cfg.tapActionChance = 0;  // a painting's blink is a blink, not an action
+  if (kind == 0) cfg.tapActionChance = cfg.headActionChance = 0;  // a painting's blink is a blink, not an action
   if (next->idleMinMs() > 0) cfg.idleMinMs = next->idleMinMs();
   if (next->idleMaxMs() > 0) cfg.idleMaxMs = next->idleMaxMs();
   for (int i = 0; i < (int)Anim::Count; ++i) {

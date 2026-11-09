@@ -164,11 +164,18 @@ void Brain::release() {
   }
   // Plain click: the top part of the canvas is the head. Body taps split three ways: the
   // "special touch" (its line, and its motion when there is one), one of the random actions
-  // (with the plain touch line), or the plain touch.
+  // (with the plain touch line), or the plain touch. Head pats split two ways: one of the
+  // random actions (with the head-pat line) or the head pat.
   bool head = offY_ < cfg_.headFraction * cfg_.spriteH;
-  double u = head ? 1.0 : std::uniform_real_distribution<double>(0.0, 1.0)(rng_);
-  bool special = u < cfg_.specialChance;
-  bool action = !special && u < cfg_.specialChance + cfg_.tapActionChance && available(Anim::Blink);
+  bool special = false, action = false;
+  if (head) {
+    action = cfg_.headActionChance > 0 && available(Anim::Blink) &&
+             std::uniform_real_distribution<double>(0.0, 1.0)(rng_) < cfg_.headActionChance;
+  } else {
+    double u = std::uniform_real_distribution<double>(0.0, 1.0)(rng_);
+    special = u < cfg_.specialChance;
+    action = !special && u < cfg_.specialChance + cfg_.tapActionChance && available(Anim::Blink);
+  }
   pendingEvent_ = head ? PetEvent::TapHead : special ? PetEvent::TapSpecial : PetEvent::TapBody;
   if (action) {
     enter(Anim::Blink);

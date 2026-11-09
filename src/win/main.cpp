@@ -746,7 +746,7 @@ bool loadSkin(App& app, int ship, const std::wstring& skin, std::wstring* err) {
   cfg.groundInset = next->groundInset();
   cfg.headFraction = next->headFraction();
   cfg.canWalk = next->animated() && next->walks();  // a painting sliding across the desktop looks wrong
-  if (kind == 0) cfg.tapActionChance = 0;  // a painting's blink is a blink, not an action
+  if (kind == 0) cfg.tapActionChance = cfg.headActionChance = 0;  // a painting's blink is a blink, not an action
   if (next->idleMinMs() > 0) cfg.idleMinMs = next->idleMinMs();
   if (next->idleMaxMs() > 0) cfg.idleMaxMs = next->idleMaxMs();
   for (int i = 0; i < (int)Anim::Count; ++i) {
@@ -1499,6 +1499,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
   app.cfgBase.idleMaxMs = ini.getInt("general", "idle_max_ms", 12000);
   app.cfgBase.specialChance = ini.getDouble("general", "special_chance", 0.35);
   app.cfgBase.tapActionChance = ini.getDouble("general", "tap_action_chance", 0.30);
+  app.cfgBase.headActionChance = ini.getDouble("general", "head_action_chance", 0.30);
   for (int i = 0; i < (int)Anim::Count; ++i)
     app.cfgBase.fps[i] = ini.getInt("fps", pet::animName((Anim)i), app.cfgBase.fps[i]);
   app.fallbackVoices = pet::VoiceBank::parsePlain(readFile(app.assetsDir + L"\\lines.txt"));

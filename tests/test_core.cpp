@@ -222,6 +222,7 @@ static BrainConfig testCfg() {
   c.walkSpeed = 100;
   c.sleepAfterSec = 10;
   c.tapActionChance = 0;  // body taps stay plain unless a test turns actions on
+  c.headActionChance = 0;  // and head pats too
   return c;
 }
 static Brain makeBrain(unsigned seed = 1, BrainConfig c = testCfg()) {
@@ -328,12 +329,63 @@ TEST(brain_body_tap_can_play_a_random_action) {
   CHECK(f.anim == Anim::Blink);
   CHECK(f.event == PetEvent::TapBody);  // still the touch line
   b.tick(10000);
-  b.press(110, 555);  // head pats are never replaced
+  b.press(110, 555);  // head pats have their own chance, 0 here
   b.release();
   f = b.tick(0);
   CHECK(f.anim == Anim::React);
   CHECK_EQ(f.variant, 1);
   CHECK(f.event == PetEvent::TapHead);
+}
+
+TEST(brain_head_pat_can_play_a_random_action) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::React] = {2, 3};  // body, head pat
+  c.variants[(int)Anim::Blink] = {3, 4, 5};
+  c.headActionChance = 1;
+  Brain b = makeBrain(1, c);
+  b.tick(0);
+  b.press(110, 555);  // head
+  b.release();
+  Frame f = b.tick(0);
+  CHECK(f.anim == Anim::Blink);
+  CHECK(f.event == PetEvent::TapHead);  // still the head-pat line
+}
+
+TEST(brain_head_pat_action_needs_action_frames) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::React] = {2, 3};
+  c.variants[(int)Anim::Blink].clear();
+  c.headActionChance = 1;
+  Brain b = makeBrain(1, c);
+  b.tick(0);
+  b.press(110, 555);
+  b.release();
+  Frame f = b.tick(0);
+  CHECK(f.anim == Anim::React);  // the head pat
+  CHECK_EQ(f.variant, 1);
+  CHECK(f.event == PetEvent::TapHead);
+}
+
+TEST(brain_head_pat_shares) {
+  BrainConfig c = testCfg();
+  c.variants[(int)Anim::React] = {1, 1, 1};
+  c.reactSpecial = 2;
+  c.specialChance = 1;  // body only: a head pat is never special
+  c.headActionChance = 0.30;
+  Brain b = makeBrain(7, c);
+  b.tick(0);
+  int action = 0, pat = 0;
+  for (int i = 0; i < 400; ++i) {
+    b.press(110, 555);
+    b.release();
+    Frame f = b.tick(0);
+    CHECK(f.event == PetEvent::TapHead);
+    if (f.anim == Anim::Blink) ++action;
+    else if (f.anim == Anim::React && f.variant == 1) ++pat;
+    b.tick(5000);
+  }
+  CHECK(action > 80 && action < 160);  // about 30%
+  CHECK_EQ(action + pat, 400);         // the rest are head pats
 }
 
 TEST(brain_tap_action_picks_any_of_the_actions) {
