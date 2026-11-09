@@ -62,7 +62,7 @@ Windows 上实测（Ryzen 7 9700X）：Q 版待机约 1% 单核、30 MB。
 
 聊天的行为：
 
-- 默认用 Claude（`api=anthropic`）：在 platform.claude.com 的 API Keys 页面新建 key。默认模型 `claude-sonnet-5-5`（快、便宜），可改成 `claude-opus-5-5`（更用心，也更慢、更贵）或 `claude-haiku-5-5`；`reasoning_effort` 控制她回答前思考多少（默认 `low`，回得快；留空则不发送，给不支持这个参数的旧模型用）；`max_tokens` 限制单次回复（默认 16000，含思考）。用 Opus 5.5 或 Sonnet 5.5 时，安全机制拒绝回答的部分请求会由服务端自动换用推荐的模型重答（`fallbacks=0` 关闭）；Haiku 5.5 没有这个功能，被拒时气泡显示「她没有回答这个问题」。用过旧版、`chat.ini` 还是没填 key 的旧模板的话，点「聊天设置…」会自动换成新模板，旧文件另存为 `chat.ini.bak`。角色资料作为缓存前缀发送，之后每句话只按缓存价计费；用 Opus 5.5 时一句话大约 0.01–0.03 美元，Sonnet 5.5 更便宜，用量在 Claude Console 里能看到。
+- 默认用 Claude（`api=anthropic`）：在 platform.claude.com 的 API Keys 页面新建 key。默认模型 `claude-opus-5-5`，可改成 `claude-sonnet-5-5`（更快、更便宜，回答没那么用心）或 `claude-haiku-5-5`；`reasoning_effort` 控制她回答前思考多少（默认 `low`，回得快；留空则不发送，给不支持这个参数的旧模型用）；`max_tokens` 限制单次回复（默认 16000，含思考）。用 Opus 5.5 或 Sonnet 5.5 时，安全机制拒绝回答的部分请求会由服务端自动换用推荐的模型重答（`fallbacks=0` 关闭）；Haiku 5.5 没有这个功能，被拒时气泡显示「她没有回答这个问题」。用过旧版、`chat.ini` 还是没填 key 的旧模板的话，点「聊天设置…」会自动换成新模板，旧文件另存为 `chat.ini.bak`。角色资料作为缓存前缀发送，之后每句话只按缓存价计费；用 Opus 5.5 时一句话大约 0.01–0.03 美元，Sonnet 5.5 更便宜，用量在 Claude Console 里能看到。
 - 也支持任何兼容 OpenAI `chat/completions` 接口的服务，例如 OpenAI、DeepSeek、通义千问、本地的 Ollama：去掉 `api=anthropic`，改 `base_url` 和 `model`。
 - 也支持 Responses API：加 `api=responses`；用 `?ak=` 传 key 的服务（例如字节 ModelHub）再加 `auth=ak`；推理模型可以用 `reasoning_effort=low/medium/high` 调推理强度。
 - 第一次和某个角色聊天时，她会先「回想自己」：模型读完这个角色**所有衣装**的全部官方台词（含誓约后的台词），综合成一份统一的角色档案——性格、说话方式与称呼、与指挥官的关系、身份背景、各套衣装的场合——存在 `persona-<角色>.txt`（和 `chat.ini` 同目录；可以手改，删掉就重新生成，台词更新后也会自动重做）。之后每一句都按这份档案回答，提示词里另附当前衣装的介绍和十几句台词作口吻参考。

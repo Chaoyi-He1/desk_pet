@@ -19,7 +19,7 @@ struct ChatConfig {
   std::string model = "gpt-4o-mini";
   bool responsesApi = false;   // api=responses: POST /responses (input/output) instead of chat/completions
   // api=anthropic: POST /v1/messages (Claude). Defaults then: base_url https://api.anthropic.com,
-  // model claude-sonnet-5-5, reasoning_effort low (sent as output_config.effort).
+  // model claude-opus-5-5, reasoning_effort low (sent as output_config.effort).
   bool anthropicApi = false;
   bool keyInQuery = false;     // auth=ak: the key goes in "?ak=" (ModelHub) instead of "Authorization: Bearer"
   std::string reasoningEffort; // reasoning_effort=low|medium|high (Responses / Anthropic); empty: not sent

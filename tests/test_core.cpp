@@ -1001,7 +1001,7 @@ TEST(chat_template_is_claude) {
   ChatConfig t = ChatConfig::parse(std::string(chatIniTemplate()) + "api_key=sk-ant-x\n");
   CHECK(t.ready() && t.anthropicApi);
   CHECK(t.endpoint() == "https://api.anthropic.com/v1/messages");
-  CHECK(t.model == "claude-sonnet-5-5" && t.reasoningEffort == "low");
+  CHECK(t.model == "claude-opus-5-5" && t.reasoningEffort == "low");
 }
 
 TEST(chat_modelhub_responses_config) {
@@ -1026,7 +1026,7 @@ TEST(chat_anthropic_config) {
   ChatConfig c = ChatConfig::parse("[chat]\napi=anthropic\napi_key=sk-ant-x\n");
   CHECK(c.ready() && c.anthropicApi && !c.responsesApi);
   CHECK(c.baseUrl == "https://api.anthropic.com");  // defaults for this API
-  CHECK(c.model == "claude-sonnet-5-5");
+  CHECK(c.model == "claude-opus-5-5");
   CHECK(c.reasoningEffort == "low");
   CHECK(c.endpoint() == "https://api.anthropic.com/v1/messages");
   CHECK(c.requestUrl() == c.endpoint());  // the key never goes into the address
@@ -1050,7 +1050,7 @@ TEST(chat_anthropic_request_body) {
   s.reset("你是贝尔法斯特");
   s.accept("早", "早安，指挥官", 8);
   std::string b = s.requestBody(c, "红茶");
-  CHECK(b.find("\"model\":\"claude-sonnet-5-5\"") != std::string::npos);
+  CHECK(b.find("\"model\":\"claude-opus-5-5\"") != std::string::npos);
   CHECK(b.find("\"max_tokens\":16000") != std::string::npos);
   CHECK(b.find("\"system\":[{\"type\":\"text\",\"text\":\"你是贝尔法斯特\",\"cache_control\":{\"type\":\"ephemeral\"}}]") !=
         std::string::npos);  // the persona is the cached prefix
