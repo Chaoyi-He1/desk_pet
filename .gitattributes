@@ -1,0 +1,5 @@
+# This working tree is shared by macOS and Windows through Dropbox. Keep text files LF on
+# both, whatever each side's core.autocrlf says, so neither sees the other's endings as edits.
+* text=auto eol=lf
+# cmd.exe wants CRLF in batch files.
+*.bat text eol=crlf
