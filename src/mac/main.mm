@@ -101,6 +101,21 @@ static std::vector<CGDirectDisplayID> activeDisplays(std::vector<pet::Rect>* bou
   return std::vector<CGDirectDisplayID>(ids, ids + n);
 }
 
+// Every display as a floor, in the order of `ids` (the fullscreen scan's order). Her feet are on
+// the screen's bottom edge (over the Dock); the sides and the top are the visible frame's.
+static std::vector<pet::Rect> displayFloors(const std::vector<CGDirectDisplayID>& ids, const std::vector<pet::Rect>& bounds) {
+  CGFloat sh = screenH();
+  std::vector<pet::Rect> out = bounds;  // a display without an NSScreen (a mirror) keeps its bounds
+  for (size_t i = 0; i < ids.size(); ++i)
+    for (NSScreen* screen in NSScreen.screens) {
+      if (petmac::displayID(screen) != ids[i]) continue;
+      NSRect v = screen.visibleFrame;
+      out[i] = {(int)NSMinX(v), (int)(sh - NSMaxY(v)), (int)NSMaxX(v), (int)(sh - NSMinY(screen.frame))};
+      break;
+    }
+  return out;
+}
+
 // For every display: is a fullscreen program filling it? The frontmost ordinary window over the
 // display's centre decides; our own windows and the menu bar / Dock layers do not count.
 static std::vector<bool> coveredDisplays(const std::vector<pet::Rect>& displays) {
@@ -209,6 +224,7 @@ struct Ship {
   bool userHeight_, mirrorLeft_, hideOnFullscreen_, userHidden_, fsHidden_, clickThrough_;
   bool gameLowPower_, lowPower_;  // fewer frames and no yield scans while a program runs fullscreen somewhere
   pet::FullscreenRefuge refuge_;  // keeps her off displays that fullscreen programs fill
+  std::vector<bool> covered_;     // displays fullscreen programs fill, in activeDisplays order: not her floors
   // Paintings (static, dynamic, Live2D) and chibis keep separate sizes: [0] painting, [1] chibi.
   int heightK_[2];
   bool userHeightK_[2];
@@ -508,12 +524,14 @@ struct Ship {
   shownPose_ = pet::Pose();
   shownMirror_ = false;
   [self applySprites];
-  NSRect work = [self petScreen].visibleFrame;
+  NSScreen* screen = [self petScreen];
+  NSRect work = screen.visibleFrame;
   if (x < NSMinX(work) || x > NSMaxX(work) - 20) x = (int)(NSMaxX(work) - cfg.spriteW - 24);
   [self updateGround];
-  // Install the selected monitor's bounds before restoring x: a left-hand
-  // monitor has negative coordinates, outside a new Brain's default bounds.
-  brain_->setPosition(x, brain_->groundTop());
+  // Install every display's floor before restoring x: a left-hand monitor has negative
+  // coordinates, outside a new Brain's default bounds. Her display's ground picks her floor
+  // among displays stacked above one another.
+  brain_->setPosition(x, (int)(screenH() - NSMinY(screen.frame)) - cfg.spriteH);
   brain_->setHidden(userHidden_ || fsHidden_);
   timerMs_ = -1;
   lastTick_ = CACurrentMediaTime();
@@ -684,6 +702,7 @@ struct Ship {
 - (void)step:(int)dtMs {
   pet::Frame f = brain_->tick(dtMs);
   if (f.dirty) [self applyFrame:f];
+  if (f.x != last_.x || f.y != last_.y) [self followDisplay:f];
   last_ = f;
   [self setTimerMs:f.nextTickMs];
   pet::PetEvent event = f.event;
@@ -718,24 +737,28 @@ struct Ship {
 - (void)fullscreenWatch {
   if (!sprites_ || !brain_) return;
   std::vector<pet::Rect> displays;
-  std::vector<CGDirectDisplayID> ids = activeDisplays(&displays);
+  activeDisplays(&displays);
   std::vector<bool> covered = coveredDisplays(displays);
   [self setLowPower:gameLowPower_ && std::find(covered.begin(), covered.end(), true) != covered.end()];
-  if (!hideOnFullscreen_) return;
+  if (!hideOnFullscreen_) {
+    if (!covered_.empty()) {  // switched off: every display is hers again
+      covered_.clear();
+      if (last_.visible) [self updateGround];
+    }
+    return;
+  }
+  bool floorsChanged = covered != covered_;
+  covered_ = covered;  // updateGround leaves her the free displays only
   pet::FullscreenRefuge::Result r =
       refuge_.tick(displays, covered, last_.x, last_.y, sprites_->width(), sprites_->height());
   bool hide = r.action == pet::FullscreenRefuge::Action::Hide;
   bool move = r.action == pet::FullscreenRefuge::Action::Move;
-  if (move) {  // before she shows again: no frame over the game
-    int d = pet::monitorAtPoint(displays, r.x + sprites_->width() / 2, r.y + sprites_->height() / 2);
-    if (d >= 0) displayID_ = ids[d];
-    [self updateGround];
-    brain_->setPosition(r.x, brain_->groundTop());
-  }
+  if (move) brain_->setPosition(r.x, r.y);  // before she shows again: no frame over the game
   if (hide != fsHidden_) {
     fsHidden_ = hide;
-    [self updateHidden];
-  } else if (move) {
+    [self updateHidden];  // re-reads the floors when she shows
+  } else if (!hide && (move || floorsChanged)) {
+    if (floorsChanged) [self updateGround];  // a walk towards the game's display ends at the edge
     lastTick_ = CACurrentMediaTime();
     [self step:0];
   }
@@ -786,21 +809,27 @@ struct Ship {
   return screen;
 }
 
+// Her floors: every display no fullscreen program fills. She stands on the one under her feet
+// and walks over to the displays beside it (see Brain::walkRange).
 - (void)updateGround {
-  NSScreen* screen = [self petScreen];
-  NSRect work = screen.visibleFrame;
-  CGFloat sh = screenH();
-  brain_->setWorkTop((int)(sh - NSMaxY(work)));
-  // Her feet are on the screen's bottom edge (over the Dock); the sides are the visible frame's.
-  brain_->setGround((int)NSMinX(work), (int)NSMaxX(work), (int)(sh - NSMinY(screen.frame)));
+  std::vector<pet::Rect> bounds;
+  std::vector<CGDirectDisplayID> ids = activeDisplays(&bounds);
+  brain_->setFloors(pet::freeFloors(displayFloors(ids, bounds), covered_));
+}
+
+// The display she is on follows her as she walks or is carried: its size, scale and strip
+// are hers (petScreen).
+- (void)followDisplay:(const pet::Frame&)f {
+  std::vector<pet::Rect> bounds;
+  std::vector<CGDirectDisplayID> ids = activeDisplays(&bounds);
+  int d = pet::monitorAtPoint(bounds, f.x + sprites_->width() / 2, f.y + sprites_->height() / 2);
+  if (d >= 0) displayID_ = ids[d];
 }
 
 - (void)screenChanged {
   if (!brain_) return;
-  bool airborne = brain_->anim() == Anim::Drag || brain_->anim() == Anim::Fall;
-  int y = (int)(screenH() - NSMaxY(panel_.frame));
   [self updateGround];
-  brain_->setPosition(last_.x, airborne ? y : brain_->groundTop());
+  brain_->setPosition(last_.x, last_.y);  // standing, she stays on her display's ground (or the nearest one's)
   [self step:0];
 }
 
@@ -1425,13 +1454,8 @@ static void brainPoint(NSEvent* e, int* x, int* y) {
 - (void)mouseReleased:(NSEvent*)e {
   pressing_ = false;
   bool moved = brain_->anim() == Anim::Drag;
-  if (moved) {
-    refuge_.userMoved();  // she stays where the commander put her
-    NSScreen* screen = petmac::screenAtPoint(eventScreenPoint(e));
-    if (screen) displayID_ = petmac::displayID(screen);
-    [self updateGround];
-  }
-  brain_->release();
+  if (moved) refuge_.userMoved();  // she stays where the commander put her
+  brain_->release();               // she falls to the display under her feet
   // Three quick clicks on her open the chat; the third says no touch line.
   bool chat = false;
   if (moved) {
