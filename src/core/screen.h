@@ -1,6 +1,7 @@
 // Pure geometry helpers shared by the platform shells.
 #pragma once
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <vector>
 
@@ -31,6 +32,64 @@ inline int monitorAtPoint(const std::vector<Rect>& monitors, int x, int y) {
 inline bool coversMonitor(const Rect& win, const Rect& monitor, int tolerance = 2) {
   return win.left <= monitor.left + tolerance && win.top <= monitor.top + tolerance &&
          win.right >= monitor.right - tolerance && win.bottom >= monitor.bottom - tolerance;
+}
+
+// The part of her canvas on one display. macOS (with "Displays have separate Spaces", its default)
+// draws a window on one display only, so a canvas over a seam is shown as one window per piece.
+struct Piece {
+  int display;  // index into the displays
+  Rect rect;
+};
+
+// The pieces of `canvas` on each display it overlaps, largest first.
+inline std::vector<Piece> canvasPieces(const Rect& canvas, const std::vector<Rect>& displays) {
+  std::vector<Piece> out;
+  for (size_t i = 0; i < displays.size(); ++i) {
+    const Rect& d = displays[i];
+    Rect r{std::max(canvas.left, d.left), std::max(canvas.top, d.top), std::min(canvas.right, d.right),
+           std::min(canvas.bottom, d.bottom)};
+    if (r.right > r.left && r.bottom > r.top) out.push_back({(int)i, r});
+  }
+  auto area = [](const Piece& p) { return (long long)(p.rect.right - p.rect.left) * (p.rect.bottom - p.rect.top); };
+  std::stable_sort(out.begin(), out.end(), [&](const Piece& a, const Piece& b) { return area(a) > area(b); });
+  return out;
+}
+
+// Which of her two windows shows which piece. A visible window that moves onto another display
+// jumps about while the system hands it over, so a window keeps showing the piece on the display
+// it is already on; the other pieces go out largest first, the main window first. When only the
+// helper has a piece (she has left the main window's display), the two swap roles.
+struct PieceWindows {
+  bool swap = false;         // the helper window becomes the main one
+  int piece[2] = {-1, -1};   // per window (after the swap): the piece it shows, -1 none
+};
+
+// `on`: the display each window is on now (-1: hidden). At most two pieces are shown.
+inline PieceWindows assignPieces(const std::vector<Piece>& pieces, const std::array<int, 2>& on) {
+  PieceWindows out;
+  size_t n = std::min<size_t>(pieces.size(), 2);
+  bool taken[2] = {false, false};
+  for (int w = 0; w < 2; ++w)
+    for (size_t p = 0; p < n; ++p)
+      if (!taken[p] && on[w] >= 0 && pieces[p].display == on[w]) {
+        out.piece[w] = (int)p;
+        taken[p] = true;
+        break;
+      }
+  for (int w = 0; w < 2; ++w) {
+    if (out.piece[w] >= 0) continue;
+    for (size_t p = 0; p < n; ++p)
+      if (!taken[p]) {
+        out.piece[w] = (int)p;
+        taken[p] = true;
+        break;
+      }
+  }
+  if (out.piece[0] < 0 && out.piece[1] >= 0) {
+    out.swap = true;
+    std::swap(out.piece[0], out.piece[1]);
+  }
+  return out;
 }
 
 // The floors she may walk on while fullscreen programs fill some displays: the ones not covered,

@@ -69,6 +69,70 @@ TEST(monitor_selection_handles_gaps_and_disconnected_displays) {
   CHECK_EQ(monitorAtPoint({}, 0, 0), -1);
 }
 
+static bool sameRect(const Rect& a, const Rect& b) {
+  return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+}
+
+// The user's Mac: an external display on the left, both grounds at y=956.
+static const std::vector<Rect> kTwoDisplays{{0, 0, 1470, 956}, {-2560, -484, 0, 956}};
+
+TEST(pieces_one_display_is_one_piece) {
+  std::vector<Piece> p = canvasPieces(Rect{100, 790, 266, 956}, kTwoDisplays);
+  CHECK_EQ((int)p.size(), 1);
+  CHECK_EQ(p[0].display, 0);
+  CHECK(sameRect(p[0].rect, Rect{100, 790, 266, 956}));
+}
+
+TEST(pieces_over_a_seam_largest_first) {
+  std::vector<Piece> p = canvasPieces(Rect{-120, 790, 46, 956}, kTwoDisplays);
+  CHECK_EQ((int)p.size(), 2);
+  CHECK_EQ(p[0].display, 1);  // 120 wide on the left display
+  CHECK(sameRect(p[0].rect, Rect{-120, 790, 0, 956}));
+  CHECK_EQ(p[1].display, 0);  // 46 wide on the built-in one
+  CHECK(sameRect(p[1].rect, Rect{0, 790, 46, 956}));
+}
+
+TEST(pieces_none_off_every_display) {
+  CHECK(canvasPieces(Rect{3000, 0, 3166, 166}, kTwoDisplays).empty());
+  CHECK(canvasPieces(Rect{0, 0, 10, 10}, {}).empty());
+  // a canvas touching a display only along an edge has no piece there
+  CHECK_EQ((int)canvasPieces(Rect{-166, 790, 0, 956}, kTwoDisplays).size(), 1);
+}
+
+TEST(windows_keep_their_display_while_she_crosses) {
+  std::vector<Piece> one{{0, Rect{0, 0, 10, 10}}};
+  std::vector<Piece> two{{0, Rect{0, 0, 6, 10}}, {1, Rect{-4, 0, 0, 10}}};
+  std::vector<Piece> twoFlipped{{1, Rect{-6, 0, 0, 10}}, {0, Rect{0, 0, 4, 10}}};
+  // all of her on the main window's display: the helper is not needed
+  PieceWindows w = assignPieces(one, {0, -1});
+  CHECK(!w.swap && w.piece[0] == 0 && w.piece[1] == -1);
+  // she reaches the seam: the main window keeps its display, the hidden helper takes the rest
+  w = assignPieces(two, {0, -1});
+  CHECK(!w.swap && w.piece[0] == 0 && w.piece[1] == 1);
+  // most of her is over the seam now: each window still keeps its own display
+  w = assignPieces(twoFlipped, {0, 1});
+  CHECK(!w.swap && w.piece[0] == 1 && w.piece[1] == 0);
+}
+
+TEST(windows_swap_when_she_has_left_the_main_windows_display) {
+  std::vector<Piece> left{{1, Rect{-20, 0, -10, 10}}};
+  PieceWindows w = assignPieces(left, {0, 1});  // the helper is already there
+  CHECK(w.swap && w.piece[0] == 0 && w.piece[1] == -1);
+  w = assignPieces(left, {0, -1});  // nothing is there yet (a drag, a move): the main one goes
+  CHECK(!w.swap && w.piece[0] == 0 && w.piece[1] == -1);
+}
+
+TEST(windows_take_pieces_largest_first_when_none_is_on_their_display) {
+  std::vector<Piece> two{{0, Rect{0, 0, 6, 10}}, {1, Rect{-4, 0, 0, 10}}};
+  PieceWindows w = assignPieces(two, {-1, -1});
+  CHECK(!w.swap && w.piece[0] == 0 && w.piece[1] == 1);
+  w = assignPieces(two, {2, -1});  // the main window is on a third display
+  CHECK(!w.swap && w.piece[0] == 0 && w.piece[1] == 1);
+  w = assignPieces(two, {2, 1});
+  CHECK(!w.swap && w.piece[0] == 0 && w.piece[1] == 1);
+  CHECK(assignPieces({}, {0, 1}).piece[0] == -1);  // nothing to show
+}
+
 // ---------- pose ----------
 TEST(pose_table) {
   CHECK_EQ(poseFrameCount(Anim::Idle), 2);

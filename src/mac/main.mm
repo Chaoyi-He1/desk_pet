@@ -203,6 +203,12 @@ struct Ship {
 @implementation PetController {
   NSPanel* panel_;
   PetView* view_;
+  // Over a seam between displays the helper window shows the part of her on the other display
+  // (placeAtX:y:); the two swap roles once she has left the main window's display.
+  NSPanel* helperPanel_;
+  PetView* helperView_;
+  CGDirectDisplayID panelOn_, helperOn_;  // the display each window is on (0: not placed / hidden)
+  bool helperUsed_;
   PetBubble* bubble_;
   NSStatusItem* status_;
   NSTimer* animTimer_;
@@ -366,7 +372,7 @@ struct Ship {
     return;
   }
   [self prefetchOtherSkins];
-  panel_.ignoresMouseEvents = clickThrough_;
+  [self setIgnoresMouse:clickThrough_];
   [self startYield];  // before the status menu: it shows whether the permission is missing
   [self createStatusItem];
   watchTimer_ = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(watch) userInfo:nil repeats:YES];
@@ -544,32 +550,34 @@ struct Ship {
 
 // ---------- window ----------
 
-- (void)createWindow {
+// One borderless panel with her layers; the panel is the view's window.
+- (PetView*)makePetWindow {
   NSRect r = NSMakeRect(0, 0, 10, 10);
-  panel_ = [[NSPanel alloc] initWithContentRect:r
-                                      styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
-                                        backing:NSBackingStoreBuffered
-                                          defer:NO];
-  panel_.opaque = NO;
-  panel_.backgroundColor = NSColor.clearColor;
-  panel_.hasShadow = NO;
-  panel_.level = CGWindowLevelForKey(kCGDockWindowLevelKey) + 1;  // above the Dock: her feet are on the screen's bottom edge
-  panel_.hidesOnDeactivate = NO;
-  panel_.becomesKeyOnlyIfNeeded = YES;
-  panel_.movableByWindowBackground = NO;
-  panel_.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary |
-                              NSWindowCollectionBehaviorIgnoresCycle;
-  view_ = [[PetView alloc] initWithFrame:r];
-  view_.controller = self;
-  view_.wantsLayer = YES;
-  view_.layer.backgroundColor = NSColor.clearColor.CGColor;
+  NSPanel* panel = [[NSPanel alloc] initWithContentRect:r
+                                              styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+                                                backing:NSBackingStoreBuffered
+                                                  defer:NO];
+  panel.releasedWhenClosed = NO;
+  panel.opaque = NO;
+  panel.backgroundColor = NSColor.clearColor;
+  panel.hasShadow = NO;
+  panel.level = CGWindowLevelForKey(kCGDockWindowLevelKey) + 1;  // above the Dock: her feet are on the screen's bottom edge
+  panel.hidesOnDeactivate = NO;
+  panel.becomesKeyOnlyIfNeeded = YES;
+  panel.movableByWindowBackground = NO;
+  panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary |
+                             NSWindowCollectionBehaviorIgnoresCycle;
+  PetView* view = [[PetView alloc] initWithFrame:r];
+  view.controller = self;
+  view.wantsLayer = YES;
+  view.layer.backgroundColor = NSColor.clearColor.CGColor;
 
   CALayer* pic = [CALayer layer];
   pic.contentsGravity = kCAGravityResize;
   pic.minificationFilter = kCAFilterLinear;
   pic.magnificationFilter = kCAFilterLinear;
-  [view_.layer addSublayer:pic];
-  view_.picLayer = pic;
+  [view.layer addSublayer:pic];
+  view.picLayer = pic;
 
   // Darkening overlay for sleeping paintings: black, masked by the picture's alpha.
   CALayer* shade = [CALayer layer];
@@ -578,40 +586,130 @@ struct Ship {
   CALayer* mask = [CALayer layer];
   mask.contentsGravity = kCAGravityResize;
   shade.mask = mask;
-  [view_.layer addSublayer:shade];
-  view_.shadeLayer = shade;
-  view_.maskLayer = mask;
-  panel_.contentView = view_;
+  [view.layer addSublayer:shade];
+  view.shadeLayer = shade;
+  view.maskLayer = mask;
+  panel.contentView = view;
+  return view;
 }
 
-// Sizes the panel and layers for the current sprite set.
+- (void)createWindow {
+  view_ = [self makePetWindow];
+  panel_ = (NSPanel*)view_.window;
+  helperView_ = [self makePetWindow];
+  helperPanel_ = (NSPanel*)helperView_.window;
+  panelOn_ = helperOn_ = 0;
+  helperUsed_ = false;
+}
+
+// Sizes the panels and layers for the current sprite set.
 - (void)applySprites {
   CGFloat scale = [self petScreen].backingScaleFactor;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  view_.picLayer.affineTransform = CGAffineTransformIdentity;
-  view_.shadeLayer.affineTransform = CGAffineTransformIdentity;
-  view_.picLayer.contentsScale = scale;
-  view_.shadeLayer.opacity = 0;
-  view_.shadeLayer.hidden = sprites_->animated();
-  if (!sprites_->animated()) {
-    CGFloat W = sprites_->picW(), H = sprites_->picH();
-    view_.picLayer.anchorPoint = CGPointMake(0.5, 0);  // poses rotate/scale around the feet
-    view_.picLayer.bounds = CGRectMake(0, 0, W, H);
-    view_.picLayer.position = CGPointMake(sprites_->width() / 2.0, sprites_->padBottom());
-    view_.shadeLayer.anchorPoint = view_.picLayer.anchorPoint;
-    view_.shadeLayer.bounds = view_.picLayer.bounds;
-    view_.shadeLayer.position = view_.picLayer.position;
-    view_.maskLayer.frame = CGRectMake(0, 0, W, H);
-    view_.maskLayer.contentsScale = scale;
-  } else {  // one canvas-sized surface; the compositor scales it
-    view_.picLayer.anchorPoint = CGPointMake(0.5, 0.5);
-    view_.picLayer.bounds = CGRectMake(0, 0, sprites_->width(), sprites_->height());
-    view_.picLayer.position = CGPointMake(sprites_->width() / 2.0, sprites_->height() / 2.0);
+  for (PetView* v in @[ view_, helperView_ ]) {
+    v.picLayer.affineTransform = CGAffineTransformIdentity;
+    v.shadeLayer.affineTransform = CGAffineTransformIdentity;
+    v.picLayer.contentsScale = scale;
+    v.shadeLayer.opacity = 0;
+    v.shadeLayer.hidden = sprites_->animated();
+    if (!sprites_->animated()) {
+      CGFloat W = sprites_->picW(), H = sprites_->picH();
+      v.picLayer.anchorPoint = CGPointMake(0.5, 0);  // poses rotate/scale around the feet
+      v.picLayer.bounds = CGRectMake(0, 0, W, H);
+      v.picLayer.position = CGPointMake(sprites_->width() / 2.0, sprites_->padBottom());
+      v.shadeLayer.anchorPoint = v.picLayer.anchorPoint;
+      v.shadeLayer.bounds = v.picLayer.bounds;
+      v.shadeLayer.position = v.picLayer.position;
+      v.maskLayer.frame = CGRectMake(0, 0, W, H);
+      v.maskLayer.contentsScale = scale;
+    } else {  // one canvas-sized surface; the compositor scales it
+      v.picLayer.anchorPoint = CGPointMake(0.5, 0.5);
+      v.picLayer.bounds = CGRectMake(0, 0, sprites_->width(), sprites_->height());
+      v.picLayer.position = CGPointMake(sprites_->width() / 2.0, sprites_->height() / 2.0);
+    }
   }
   [CATransaction commit];
-  [panel_ setContentSize:NSMakeSize(sprites_->width(), sprites_->height())];
+  [panel_ setContentSize:NSMakeSize(sprites_->width(), sprites_->height())];  // placeAtX:y: cuts it up again
+  [view_ setBoundsOrigin:NSZeroPoint];
   [panel_ displayIfNeeded];
+}
+
+// Her whole canvas in AppKit coordinates; over a seam each of her windows shows only a piece of it.
+- (NSRect)canvasFrame {
+  if (!sprites_) return panel_.frame;
+  return NSMakeRect(last_.x, screenH() - last_.y - sprites_->height(), sprites_->width(), sprites_->height());
+}
+
+// Shows the piece `p` of her canvas `c` (both global, top-left) in one of her windows: the
+// window covers just the piece, and the view's bounds keep her canvas coordinates, so the
+// layers, hit tests and clicks work the same in either window.
+static void showPiece(NSPanel* panel, PetView* view, const pet::Rect& p, const pet::Rect& c) {
+  NSRect frame = NSMakeRect(p.left, screenH() - p.bottom, p.right - p.left, p.bottom - p.top);
+  if (!NSEqualRects(panel.frame, frame)) [panel setFrame:frame display:NO];
+  NSPoint origin = NSMakePoint(p.left - c.left, c.bottom - p.bottom);  // the canvas is y-up from its bottom
+  if (!NSEqualPoints(view.bounds.origin, origin)) [view setBoundsOrigin:origin];
+}
+
+// Puts her canvas (global top-left x, y) on screen. macOS draws a window on one display only,
+// and a window moved over a seam is cut off there and then jumps when the other display takes
+// it over. So over a seam she is two windows, each wholly on its own display, and a window
+// never moves to another display while it is showing a piece of her.
+- (void)placeAtX:(int)x y:(int)y {
+  pet::Rect canvas{x, y, x + sprites_->width(), y + sprites_->height()};
+  std::vector<pet::Rect> bounds;
+  std::vector<CGDirectDisplayID> ids = activeDisplays(&bounds);
+  std::vector<pet::Piece> pieces = pet::canvasPieces(canvas, bounds);
+  if (pieces.size() < 2)  // on one display (or none): one window shows all of her, off-screen part included
+    pieces.assign(1, pet::Piece{pieces.empty() ? -1 : pieces[0].display, canvas});
+  auto index = [&](CGDirectDisplayID d) {
+    for (size_t i = 0; i < ids.size(); ++i)
+      if (d && ids[i] == d) return (int)i;
+    return -1;
+  };
+  pet::PieceWindows pw = pet::assignPieces(pieces, {index(panelOn_), helperUsed_ ? index(helperOn_) : -1});
+  if (pw.swap) {  // she has left the main window's display: the helper, already there, takes over
+    std::swap(panel_, helperPanel_);
+    std::swap(view_, helperView_);
+    std::swap(panelOn_, helperOn_);
+  }
+  const pet::Piece& mine = pieces[(size_t)pw.piece[0]];
+  showPiece(panel_, view_, mine.rect, canvas);
+  panelOn_ = mine.display >= 0 ? ids[(size_t)mine.display] : 0;
+  if (pw.piece[1] >= 0) {
+    const pet::Piece& other = pieces[(size_t)pw.piece[1]];
+    showPiece(helperPanel_, helperView_, other.rect, canvas);
+    helperOn_ = ids[(size_t)other.display];
+    if (!helperUsed_) {  // it takes the main window's look before it shows
+      helperUsed_ = true;
+      helperPanel_.alphaValue = panel_.visible ? panel_.alphaValue : 0;  // setIgnoresMouse: covers both already
+      if (panel_.visible) [helperPanel_ orderFrontRegardless];
+    }
+  } else if (helperUsed_) {
+    [self putHelperAway];
+  }
+}
+
+// The helper has no piece to show. A drag that began on it still needs its window to receive
+// the mouse, so while the button is down it only turns see-through; mouseReleased: puts it away.
+- (void)putHelperAway {
+  helperUsed_ = false;
+  helperOn_ = 0;
+  if (pressing_) {
+    helperPanel_.alphaValue = 0;
+  } else {
+    [helperPanel_ orderOut:nil];
+  }
+}
+
+// Both of her windows, as far as they show her: the alpha, mouse and fade changes go to each.
+- (NSArray<NSPanel*>*)shownPanels {
+  return helperUsed_ ? @[ panel_, helperPanel_ ] : @[ panel_ ];
+}
+
+- (void)setIgnoresMouse:(BOOL)ignore {
+  panel_.ignoresMouseEvents = ignore;
+  helperPanel_.ignoresMouseEvents = ignore;
 }
 
 - (void)applyFrame:(const pet::Frame&)f {
@@ -626,62 +724,75 @@ struct Ship {
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   if (!sprites_->animated()) {
-    if (mf.image != shownImage_) {
-      view_.picLayer.contents = (__bridge id)mf.image;
-      view_.maskLayer.contents = (__bridge id)mf.image;
-      shownImage_ = mf.image;
-    }
-    if (mf.pose != shownPose_ || mirror != shownMirror_) {
+    bool newImage = mf.image != shownImage_;
+    bool newPose = mf.pose != shownPose_ || mirror != shownMirror_;
+    CGAffineTransform t = CGAffineTransformIdentity;
+    if (newPose) {
       const pet::Pose& p = mf.pose;
-      CGAffineTransform t = CGAffineTransformMakeTranslation(p.dx, -p.dy);
+      t = CGAffineTransformMakeTranslation(p.dx, -p.dy);
       t = CGAffineTransformRotate(t, -p.angleDeg * M_PI / 180.0);  // CA rotates counter-clockwise
       t = CGAffineTransformScale(t, p.scaleX * (mirror ? -1 : 1), p.scaleY);
-      view_.picLayer.affineTransform = t;
-      view_.shadeLayer.affineTransform = t;
-      view_.shadeLayer.opacity = (float)(1.0 - p.brightness);
-      shownPose_ = p;
+    }
+    for (PetView* v in @[ view_, helperView_ ]) {  // the helper always holds the same picture
+      if (newImage) {
+        v.picLayer.contents = (__bridge id)mf.image;
+        v.maskLayer.contents = (__bridge id)mf.image;
+      }
+      if (newPose) {
+        v.picLayer.affineTransform = t;
+        v.shadeLayer.affineTransform = t;
+        v.shadeLayer.opacity = (float)(1.0 - mf.pose.brightness);
+      }
+    }
+    if (newImage) shownImage_ = mf.image;
+    if (newPose) {
+      shownPose_ = mf.pose;
       shownMirror_ = mirror;
     }
   } else if (mf.surface) {
-    if (mirror != shownMirror_ || !shownImage_) {
-      view_.picLayer.affineTransform = mirror ? CGAffineTransformMakeScale(-1, 1) : CGAffineTransformIdentity;
-      shownMirror_ = mirror;
+    bool flip = mirror != shownMirror_ || !shownImage_;
+    for (PetView* v in @[ view_, helperView_ ]) {
+      if (flip) v.picLayer.affineTransform = mirror ? CGAffineTransformMakeScale(-1, 1) : CGAffineTransformIdentity;
+      v.picLayer.contents = (__bridge id)mf.surface;
     }
-    view_.picLayer.contents = (__bridge id)mf.surface;
+    if (flip) shownMirror_ = mirror;
     shownImage_ = (CGImageRef)mf.surface;  // only used as a "something is shown" marker
   }
   [CATransaction commit];
 
-  CGFloat sh = screenH();
-  NSPoint origin = NSMakePoint(f.x, sh - f.y - sprites_->height());
-  if (!NSEqualPoints(panel_.frame.origin, origin)) [panel_ setFrameOrigin:origin];
+  [self placeAtX:f.x y:f.y];
   if (!panel_.visible || panel_.alphaValue < [self restAlpha] - 0.01) [self fadeIn];
+  CGFloat sh = screenH();
   [bubble_ moveToAnchorX:f.x + sprites_->width() / 2.0 anchorY:sh - f.y - sprites_->headTop()];
 }
 
 // Short fades when she appears or leaves (blyy-style), a few alpha steps done by the compositor.
 - (void)fadeIn {
-  if (!panel_.visible) {
-    panel_.alphaValue = 0;
-    [panel_ orderFrontRegardless];
-  }
+  NSArray<NSPanel*>* panels = [self shownPanels];
+  for (NSPanel* p in panels)
+    if (!p.visible) {
+      p.alphaValue = 0;
+      [p orderFrontRegardless];
+    }
   // BELFASTPET_INVISIBLE: test runs stay practically invisible on the user's screen.
   CGFloat full = [self restAlpha];
   [NSAnimationContext runAnimationGroup:^(NSAnimationContext* ctx) {
     ctx.duration = 0.25;
-    panel_.animator.alphaValue = full;
+    for (NSPanel* p in panels) p.animator.alphaValue = full;
   }];
 }
 
 - (void)fadeOut {
   if (!panel_.visible) return;
+  NSArray<NSPanel*>* panels = [self shownPanels];
   [NSAnimationContext
       runAnimationGroup:^(NSAnimationContext* ctx) {
         ctx.duration = 0.2;
-        panel_.animator.alphaValue = 0;
+        for (NSPanel* p in panels) p.animator.alphaValue = 0;
       }
       completionHandler:^{
-        if (!last_.visible) [panel_ orderOut:nil];  // still meant to be hidden
+        if (!last_.visible)  // still meant to be hidden
+          for (NSPanel* p in panels) [p orderOut:nil];
       }];
 }
 
@@ -805,7 +916,7 @@ struct Ship {
   for (NSScreen* screen in NSScreen.screens)
     if (petmac::displayID(screen) == displayID_) return screen;
   // A disconnected monitor falls back to the closest remaining one.
-  NSScreen* screen = brain_ ? petmac::screenAtPoint(NSMakePoint(NSMidX(panel_.frame), NSMidY(panel_.frame))) : NSScreen.mainScreen;
+  NSScreen* screen = brain_ ? petmac::screenAtPoint(NSMakePoint(NSMidX([self canvasFrame]), NSMidY([self canvasFrame]))) : NSScreen.mainScreen;
   if (!screen) screen = NSScreen.screens.firstObject;
   displayID_ = petmac::displayID(screen);
   return screen;
@@ -1230,7 +1341,7 @@ struct Ship {
 }
 - (void)toggleClickThrough:(id)s {
   clickThrough_ = !clickThrough_;
-  panel_.ignoresMouseEvents = clickThrough_ || yieldApplied_;
+  [self setIgnoresMouse:clickThrough_ || yieldApplied_];
   [self writeSettings];
   [self refreshMenu];
 }
@@ -1283,7 +1394,7 @@ struct Ship {
 
 // Her opaque pixels, asked with global top-left screen coordinates.
 - (bool)opaqueAtX:(double)x y:(double)y {
-  NSRect f = panel_.frame;
+  NSRect f = [self canvasFrame];
   NSPoint local = NSMakePoint(x - NSMinX(f), (screenH() - y) - NSMinY(f));
   if (local.x < 0 || local.y < 0 || local.x >= f.size.width || local.y >= f.size.height) return false;
   return [self hitAt:local];
@@ -1306,7 +1417,7 @@ struct Ship {
     [self refreshMenu];
   }
   if (![self yieldActive]) return;
-  NSRect f = panel_.frame, s = [self petScreen].frame;
+  NSRect f = [self canvasFrame], s = [self petScreen].frame;
   CGFloat sh = screenH();
   pet::Rect region = {(int)NSMinX(s), (int)(sh - NSMaxY(f)), (int)NSMaxX(s), (int)(sh - NSMinY(s))};
   uint64_t sig = pet::windowSignature(petmac::windowsBelow((CGWindowID)panel_.windowNumber, region));
@@ -1323,7 +1434,7 @@ struct Ship {
 - (void)yieldScan {
   if (![self yieldActive] || probes_.scanning()) return;
   if (lowPower_) return;  // a game is running: no periodic scans, hover checks only
-  NSRect f = panel_.frame;
+  NSRect f = [self canvasFrame];
   CGFloat sh = screenH();
   std::vector<pet::Cell> cells =
       pet::footprint((int)NSMinX(f), (int)(sh - NSMaxY(f)), (int)NSMaxX(f), (int)(sh - NSMinY(f)),
@@ -1372,7 +1483,7 @@ struct Ship {
   NSPoint m = NSEvent.mouseLocation;
   CGFloat sh = screenH();
   double x = m.x, y = sh - m.y;
-  NSRect f = panel_.frame;
+  NSRect f = [self canvasFrame];
   bool inside = x >= NSMinX(f) && x < NSMaxX(f) && y >= sh - NSMaxY(f) && y < sh - NSMinY(f);
   [self setHoverInterval:inside ? 1.0 / 12 : 0.25];
   bool over = inside && [self yieldActive] && [self opaqueAtX:x y:y];
@@ -1407,11 +1518,11 @@ struct Ship {
 - (void)applyYield:(bool)y {
   if (y == yieldApplied_) return;
   yieldApplied_ = y;
-  panel_.ignoresMouseEvents = y || clickThrough_;
+  [self setIgnoresMouse:y || clickThrough_];
   if (!last_.visible) return;
   [NSAnimationContext runAnimationGroup:^(NSAnimationContext* ctx) {
     ctx.duration = 0.1;
-    panel_.animator.alphaValue = [self restAlpha];
+    for (NSPanel* p in [self shownPanels]) p.animator.alphaValue = [self restAlpha];
   }];
 }
 
@@ -1472,6 +1583,7 @@ static void brainPoint(NSEvent* e, int* x, int* y) {
   muteTap_ = chat;
   [self step:0];
   muteTap_ = false;
+  if (!helperUsed_ && helperPanel_.visible) [helperPanel_ orderOut:nil];  // kept see-through for the drag
   if (chat) [self openChat:nil];
   if (moved) [self writeSettings];
 }
