@@ -83,22 +83,27 @@ std::string VoiceBank::pick(const std::string& skin, const std::string& fallback
     if (l.key != key && l.key != "*") return false;
     return wantSkin == nullptr || l.skin.empty() || l.skin == *wantSkin;
   };
-  for (const std::string& key : keys) {
-    const std::string* passes[3] = {&skin, &fallbackSkin, nullptr};
-    for (const std::string* want : passes) {
-      std::vector<const Line*> cands;
-      for (const Line& l : lines_)
-        if (matches(l, key, want)) cands.push_back(&l);
-      if (cands.empty()) continue;
-      if (cands.size() > 1) {
-        cands.erase(std::remove_if(cands.begin(), cands.end(), [&](const Line* l) { return l->text == last_; }),
-                    cands.end());
-      }
-      std::uniform_int_distribution<size_t> d(0, cands.size() - 1);
-      last_ = cands[d(rng)]->text;
-      return last_;
+  auto take = [&](const std::string& key, const std::string* want) -> bool {
+    std::vector<const Line*> cands;
+    for (const Line& l : lines_)
+      if (matches(l, key, want)) cands.push_back(&l);
+    if (cands.empty()) return false;
+    if (cands.size() > 1) {
+      cands.erase(std::remove_if(cands.begin(), cands.end(), [&](const Line* l) { return l->text == last_; }),
+                  cands.end());
     }
-  }
+    std::uniform_int_distribution<size_t> d(0, cands.size() - 1);
+    last_ = cands[d(rng)]->text;
+    return true;
+  };
+  // Her outfit's lines or the default outfit's, for each key in turn. Another outfit's lines
+  // talk about that outfit (its hat, its beach), so they only come when none of the keys has
+  // any line for hers or the default.
+  for (const std::string& key : keys)
+    for (const std::string* want : {&skin, &fallbackSkin})
+      if (take(key, want)) return last_;
+  for (const std::string& key : keys)
+    if (take(key, nullptr)) return last_;
   return "";
 }
 

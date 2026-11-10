@@ -32,8 +32,9 @@ public:
   size_t size() const { return lines_.size(); }
   const std::vector<Line>& lines() const { return lines_; }
 
-  // First key in `keys` that has lines for `skin`, else for `fallbackSkin`, else for any
-  // skin. Oath lines are used only when `oathOk`. Avoids repeating the previous pick
+  // First key in `keys` that has lines for `skin`, else for `fallbackSkin`; only when no key
+  // has either, the first key with lines for any skin (another outfit's lines talk about that
+  // outfit). Oath lines are used only when `oathOk`. Avoids repeating the previous pick
   // when there is a choice. Returns "" when nothing matches.
   std::string pick(const std::string& skin, const std::string& fallbackSkin, const std::vector<std::string>& keys,
                    bool oathOk, std::mt19937& rng);

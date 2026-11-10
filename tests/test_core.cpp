@@ -975,6 +975,27 @@ TEST(voice_pick_prefers_skin_then_fallback) {
   CHECK(vb.pick("01", "02", {"nokey"}, false, rng) == "");
 }
 
+// Noshiro: only some outfits have a head-pat line, and those talk about their own outfit.
+TEST(voice_pick_never_borrows_another_outfits_line_while_hers_will_do) {
+  VoiceBank vb = VoiceBank::parseTsv(
+      "skin\tkey\tindex\toath\tzh\tjp\n"
+      "01\ttouch\t1\t0\t默认触摸\t\n"
+      "09\ttouch\t1\t0\t月夜花泉触摸\t\n"
+      "08\theadtouch\t1\t0\t帽子很可爱吗？\t\n");
+  std::mt19937 rng(1);
+  // no head-pat line for her outfit or the default: her own touch line, not 08's hat line
+  CHECK(vb.pick("09", "01", {"headtouch", "touch"}, false, rng) == "月夜花泉触摸");
+  CHECK(vb.pick("03", "01", {"headtouch", "touch"}, false, rng) == "默认触摸");
+  // any outfit's line is only the last resort, when none of the keys has hers or the default's
+  CHECK(vb.pick("09", "01", {"headtouch"}, false, rng) == "帽子很可爱吗？");
+  // the default outfit's head pat still comes before her own body touch
+  VoiceBank d = VoiceBank::parseTsv(
+      "skin\tkey\tindex\toath\tzh\tjp\n"
+      "01\theadtouch\t1\t0\t默认摸头\t\n"
+      "09\ttouch\t1\t0\t月夜花泉触摸\t\n");
+  CHECK(d.pick("09", "01", {"headtouch", "touch"}, false, rng) == "默认摸头");
+}
+
 TEST(voice_oath_lines_only_when_allowed) {
   VoiceBank vb = VoiceBank::parseTsv(kTsv);
   std::mt19937 rng(3);
