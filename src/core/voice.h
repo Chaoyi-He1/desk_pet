@@ -1,5 +1,6 @@
 // Official lines per ship: which line to show for which scene and skin.
 #pragma once
+#include <cstdint>
 #include <random>
 #include <string>
 #include <vector>
@@ -49,5 +50,17 @@ private:
 
 // How long to keep a bubble up: longer lines stay longer, within [minMs, 10 s].
 int bubbleDurationMs(const std::string& utf8, int minMs);
+
+// She has one bubble, and whatever she says last replaces it. While a chat reply is up, her
+// routine lines (touches, chatter, waking up, login) keep quiet so the reply can be read; they
+// are dropped, not queued. A newer reply replaces the bubble and its time.
+class ReplyHold {
+public:
+  void replyShown(int64_t nowMs, int durationMs) { until_ = nowMs + durationMs; }
+  bool routineMayShow(int64_t nowMs) const { return nowMs >= until_; }
+
+private:
+  int64_t until_ = 0;
+};
 
 }  // namespace pet

@@ -112,6 +112,7 @@ struct App {
   int bubbleMs = 3000, chatterMin = 20, savedX = -1, savedY = 0;
   pet::ClickCounter clicks;  // three quick clicks on her open the chat
   bool muteTap = false;      // the click being handled opens the chat: no touch line for it
+  pet::ReplyHold replyHold;  // a chat reply in her bubble keeps her routine lines quiet
   std::wstring configShip, configSkin;
 
   ULONGLONG lastTick = 0, hiddenSince = 0;
@@ -436,6 +437,7 @@ std::string voiceSkin(const App& app, bool* oath) {
 
 void say(App& app, pet::Scene scene) {
   if (app.ship < 0 || !app.brain || app.last.visible == false) return;
+  if (!app.replyHold.routineMayShow((int64_t)GetTickCount64())) return;  // a chat reply is up: let it be read
   if (!IsWindowVisible(app.hwnd)) {  // nothing to put the bubble on yet: once she appears
     app.hasPendingLine = true;
     app.pendingLine = scene;
@@ -907,8 +909,9 @@ DWORD WINAPI chatThread(LPVOID param) {
 }
 
 void showChatBubble(App& app, const std::string& text) {
-  app.bubble.show(widen(text), app.last.x + app.sprites->width() / 2, app.last.y + app.sprites->headTop(),
-                  pet::bubbleDurationMs(text, app.bubbleMs) + 2000);
+  int ms = pet::bubbleDurationMs(text, app.bubbleMs) + 2000;
+  app.replyHold.replyShown((int64_t)GetTickCount64(), ms);  // her routine lines keep quiet until it times out
+  app.bubble.show(widen(text), app.last.x + app.sprites->width() / 2, app.last.y + app.sprites->headTop(), ms);
 }
 
 // Her character file, written by the study: next to chat.ini, one per ship.

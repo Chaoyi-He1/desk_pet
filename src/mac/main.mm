@@ -246,6 +246,7 @@ struct Ship {
   bool yieldOn_, yieldApplied_, axTrusted_, pressing_;
   pet::ClickCounter clicks_;  // three quick clicks on her open the chat
   bool muteTap_;              // the click being handled opens the chat: no touch line for it
+  pet::ReplyHold replyHold_;  // a chat reply in her bubble keeps her routine lines quiet
   pet::CellCache yieldCache_;
   pet::ControlRects controlRects_;
   pet::ProbeQueue probes_;
@@ -465,6 +466,7 @@ struct Ship {
 
 - (void)say:(pet::Scene)scene {
   if (ship_ < 0 || !brain_ || !last_.visible || getenv("BELFASTPET_INVISIBLE")) return;
+  if (!replyHold_.routineMayShow(nowMs())) return;  // a chat reply is up: let it be read
   bool oath = false;
   std::string skin = [self voiceSkinOath:&oath];
   std::string fallback = ships_[ship_].ini.get("ship", "default_voice", "01");
@@ -1124,10 +1126,12 @@ struct Ship {
 - (void)showBubble:(const std::string&)text {
   if (getenv("BELFASTPET_INVISIBLE")) return;
   CGFloat sh = screenH();
+  int ms = pet::bubbleDurationMs(text, bubbleMs_) + 2000;
+  replyHold_.replyShown(nowMs(), ms);  // her routine lines keep quiet until it times out
   [bubble_ showText:@(text.c_str())
             anchorX:last_.x + sprites_->width() / 2.0
             anchorY:sh - last_.y - sprites_->headTop()
-         durationMs:pet::bubbleDurationMs(text, bubbleMs_) + 2000];
+         durationMs:ms];
 }
 
 // Sends one line to her; YES when the request went out.

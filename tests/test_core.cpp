@@ -971,6 +971,33 @@ TEST(voice_bubble_duration_counts_characters) {
   CHECK_EQ(bubbleDurationMs(std::string(500, 'a'), 3000), 10000);
 }
 
+TEST(reply_hold_lets_lines_through_without_a_reply) {
+  ReplyHold h;
+  CHECK(h.routineMayShow(0));
+  CHECK(h.routineMayShow(123456));
+}
+
+TEST(reply_hold_keeps_lines_quiet_while_the_reply_is_up) {
+  ReplyHold h;
+  h.replyShown(1000, 5000);
+  CHECK(!h.routineMayShow(1000));
+  CHECK(!h.routineMayShow(5999));
+  CHECK(h.routineMayShow(6000));  // the bubble has timed out
+}
+
+TEST(reply_hold_follows_the_latest_reply) {
+  ReplyHold h;
+  h.replyShown(1000, 5000);
+  h.replyShown(3000, 5000);  // a second reply restarts the bubble's time
+  CHECK(!h.routineMayShow(7999));
+  CHECK(h.routineMayShow(8000));
+  ReplyHold s;
+  s.replyShown(1000, 10000);
+  s.replyShown(2000, 3000);  // a short one (an error note) replaces the long one and its time
+  CHECK(!s.routineMayShow(4999));
+  CHECK(s.routineMayShow(5000));
+}
+
 TEST(skin_outfit_name_strips_kind) {
   CHECK(skinOutfitName("L2D-03-彩云之玫瑰") == "彩云之玫瑰");
   CHECK(skinOutfitName("动态-01-改造") == "改造");
