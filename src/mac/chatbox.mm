@@ -150,6 +150,9 @@ static NSImage* nineSlice(NSImage* img, CGFloat capX, CGFloat capY) {
   self.releasedWhenClosed = NO;
   self.floatingPanel = YES;
   self.movableByWindowBackground = YES;
+  // The game's input bar is white whatever the system look: in Dark Mode the field's default
+  // text, placeholder and selection colours are light ones and would vanish on it.
+  self.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
 
   view_ = [[JuusChatView alloc] initWithFrame:NSMakeRect(0, 0, kW, kH)];
   view_.bar = nineSlice(bar, 16, 14);
